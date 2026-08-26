@@ -405,3 +405,91 @@ def test_pyinstaller_spec_bundles_the_ui_at_the_path_the_code_reads():
     for src_path, _ in ns["added_files"]:
         assert Path(src_path).exists(), f"spec references a missing path: {src_path}"
     assert ns["exe"].__dict__.get("console") is True, "console must stay on: the API key is printed there"
+
+
+# --------------------------------------------------------------------------
+# Pipeline error reporting: "network error" told the user nothing
+# --------------------------------------------------------------------------
+def test_orchestrate_reports_construction_failures_as_events(monkeypatch):
+    """A crash inside the SSE generator cannot become an HTTP error - the
+    connection just drops and the browser says 'network error'. Failures must
+    be delivered as an event instead."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    import yacine.api.server as srv
+
+    def boom(*a, **k):
+        raise RuntimeError("model backend exploded")
+
+    monkeypatch.setattr(srv, "MultiAgentOrchestrator", boom)
+    client = TestClient(srv.app, base_url="http://127.0.0.1:8765",
+                        headers={"X-API-Key": srv.API_KEY})
+    with client.stream("POST", "/orchestrate",
+                       json={"request": "x", "provider": "ollama"}) as r:
+        assert r.status_code == 200
+        body = "".join(r.iter_text())
+    assert "event: error" in body, "failure was not reported to the client"
+    assert "model backend exploded" in body
+    assert "hint" in body
+
+
+def test_orchestrate_hint_is_actionable():
+    import yacine.api.server as srv
+
+    class _Req:
+        base_url = "http://localhost:11434"
+
+    assert "ollama serve" in srv._orchestrate_hint(
+        ConnectionRefusedError("connection refused"), _Req())
+    assert "ollama pull" in srv._orchestrate_hint(
+        RuntimeError("404 model not found"), _Req())
+    assert "num_ctx" in srv._orchestrate_hint(
+        RuntimeError("CUDA out of memory"), _Req())
+
+
+def test_model_plan_falls_back_to_installed_models(monkeypatch):
+    """The 4-agent pipeline names four models. A machine that pulled only some
+    of them used to die on the first stage with a raw 404."""
+    import yacine.orchestrator.multi_agent as ma
+    monkeypatch.setattr(ma, "installed_models",
+                        lambda *a, **k: ["qwen2.5:3b", "qwen2.5-coder:7b"])
+    plan, notes = ma.resolve_model_plan(dict(ma.MODEL_PLAN))
+    assert set(plan.values()) <= {"qwen2.5:3b", "qwen2.5-coder:7b"}
+    assert any("deepseek-r1:7b" in n and "ollama pull" in n for n in notes)
+
+    # Ollama unreachable: leave the plan alone so the run reports that instead.
+    monkeypatch.setattr(ma, "installed_models", lambda *a, **k: [])
+    plan2, notes2 = ma.resolve_model_plan(dict(ma.MODEL_PLAN))
+    assert plan2 == ma.MODEL_PLAN and notes2 == []
+
+
+def test_ui_pipeline_helpers_are_all_defined():
+    """finishPipeline was called but never defined, inside an empty catch - so
+    every pipeline run silently threw away its own result and the user saw a
+    bare "network error". Pin every helper the pipeline path depends on."""
+    js = (ROOT / "yacine" / "ui" / "static" / "app.js").read_text(encoding="utf-8")
+    required = [
+        "finishPipeline",   # renders the result  <- the one that was missing
+        "runPipeline", "setProgress", "setActiveAgent",
+        "appendThink", "appendProc", "logEvent", "addMessage",
+    ]
+    missing = [fn for fn in required if f"function {fn}(" not in js]
+    assert not missing, f"app.js calls these but never defines them: {missing}"
+
+
+def test_ui_reports_http_failures_instead_of_swallowing_them():
+    """A 401/500 on /orchestrate must be shown, not parsed as an event stream."""
+    js = (ROOT / "yacine" / "ui" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "if (!resp.ok)" in js, "no HTTP status check before reading the stream"
+    assert "Pipeline could not start" in js
+    assert 'curEvent === "error"' in js, "the error event is not handled"
+
+
+def test_ui_does_not_reset_the_sse_buffer_mid_frame():
+    """An SSE frame can span chunks; clearing the buffer per chunk dropped the
+    first half of long events (the result payload in particular)."""
+    js = (ROOT / "yacine" / "ui" / "static" / "app.js").read_text(encoding="utf-8")
+    block = js[js.index("const { done, value } = await reader.read();"):]
+    block = block[:block.index("flush();")]
+    assert 'buf = "";' not in block, "SSE buffer is cleared inside the read loop"
+    assert "pending" in block, "partial trailing lines are not carried over"

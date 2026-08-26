@@ -435,13 +435,16 @@
         }
         buf = "";
       };
+      let pending = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buf = "";
-        const chunk = dec.decode(value, { stream: true });
-        // Process line by line.
+        // Do NOT clear `buf` here: an SSE frame can be split across chunks, and
+        // resetting per chunk silently dropped the first half of long events.
+        const chunk = pending + dec.decode(value, { stream: true });
         const lines = chunk.split("\n");
+        pending = lines.pop();          // keep any partial trailing line
+        // Process line by line.
         for (const raw of lines) {
           const line = raw.replace(/\r$/, "");
           if (line.startsWith("event:")) { curEvent = line.slice(6).trim(); }
@@ -502,6 +505,55 @@
     el.scrollTop = el.scrollHeight;
   }
 
+
+  // Render the finished pipeline result.
+  //
+  // This function was CALLED but never defined, inside a `catch (_) {}` that
+  // swallowed the resulting ReferenceError. Every pipeline run therefore threw
+  // away its own result: the chat bubble kept whatever placeholder text it had
+  // and nothing was ever saved to the conversation.
+  function finishPipeline(res, c, prog, progEl) {
+    const ok = !!(res && res.success);
+    const secs = res && res.duration ? Number(res.duration).toFixed(1) + "s" : "";
+    const lines = [];
+
+    if (ok) {
+      lines.push("✅ Pipeline complete" + (secs ? " in " + secs : ""));
+    } else {
+      lines.push("❌ Pipeline did not complete" + (secs ? " after " + secs : ""));
+      if (res && res.error) lines.push("", "Reason: " + res.error);
+    }
+    if (res && res.verification_passed) lines.push("Verification passed.");
+
+    const tasks = (res && res.micro_tasks) || [];
+    if (tasks.length) {
+      lines.push("", "Micro-tasks (" + tasks.length + "):");
+      tasks.slice(0, 20).forEach((t, i) => {
+        const mark = t.done || t.status === "done" ? "✓" : "•";
+        lines.push("  " + mark + " " + (t.title || t.description || t.id || ("task " + (i + 1))));
+      });
+      if (tasks.length > 20) lines.push("  … and " + (tasks.length - 20) + " more");
+    }
+    if (res && res.summary) lines.push("", res.summary);
+    if (res && res.plan && !ok) lines.push("", "Plan:", String(res.plan).slice(0, 1500));
+
+    const text = lines.join("\n");
+    progEl.textContent = text;
+    setProgress(100, ok ? "Complete" : "Failed");
+
+    // Keep it on the conversation object so switching chats does not lose it.
+    try {
+      c.messages = c.messages || [];
+      c.messages.push({ role: "agent", text: text });
+    } catch (_) {}
+
+    // Surface the execution log in the Log tab rather than dropping it.
+    try {
+      const log = (res && res.execution_log) || [];
+      log.slice(0, 200).forEach((l) => appendProc(typeof l === "string" ? l : JSON.stringify(l)));
+    } catch (_) {}
+  }
+
   async function runPipeline(request, c) {
     $("#thinking").innerHTML = "";
     thinkingBlocks = {};
@@ -522,6 +574,35 @@
       const resp = await fetch("/orchestrate", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
+      // An HTTP failure is NOT a fetch failure: without this check a 401 or a
+      // 500 was read as if it were an event stream, so the UI sat on
+      // "Initializing..." or reported a meaningless transport error instead of
+      // the status the server actually returned.
+      if (!resp.ok) {
+        let detail = "";
+        try { detail = (await resp.text()).slice(0, 500); } catch (_) {}
+        let hint = "";
+        if (resp.status === 401) {
+          hint = "\n\nThe UI was not authenticated. Reload this page (Ctrl+F5) " +
+                 "so it picks up the current API key.";
+        } else if (resp.status === 404) {
+          hint = "\n\nThis server build has no /orchestrate route. Restart the " +
+                 "server from the current code.";
+        } else if (resp.status >= 500) {
+          hint = "\n\nThe server hit an error before the run started. The full " +
+                 "traceback is in the server console.";
+        }
+        progEl.textContent = "Pipeline could not start: HTTP " + resp.status +
+                             " " + resp.statusText + (detail ? "\n\n" + detail : "") + hint;
+        setProgress(100, "Failed");
+        return;
+      }
+      if (!resp.body) {
+        progEl.textContent = "Pipeline could not start: the server returned no " +
+                             "response stream. Check the server console.";
+        setProgress(100, "Failed");
+        return;
+      }
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
@@ -547,15 +628,44 @@
             }
           } catch (_) {}
         }
-        else if (curEvent === "result") { try { finishPipeline(JSON.parse(buf), c, prog, progEl); } catch (_) {} }
+        else if (curEvent === "result") {
+          try {
+            finishPipeline(JSON.parse(buf), c, prog, progEl);
+          } catch (err) {
+            // Never swallow this again -- an empty catch here is what hid the
+            // fact that finishPipeline did not exist at all.
+            console.error("finishPipeline failed", err, buf);
+            progEl.textContent = "The pipeline finished but its result could not " +
+                                 "be displayed: " + err.message;
+          }
+        }
+        else if (curEvent === "error") {
+          // The server could not finish the run. Show WHY -- this used to be
+          // impossible: the stream just died and the browser said
+          // "network error", which told the user nothing.
+          try {
+            const err = JSON.parse(buf);
+            const msg = "Pipeline failed while " + (err.stage || "running") +
+                        ".\n\n" + (err.error || "Unknown error") +
+                        (err.hint ? "\n\n" + err.hint : "");
+            progEl.textContent = msg;
+            appendProc("ERROR " + (err.error || ""));
+            setProgress(100, "Failed");
+          } catch (_) {
+            progEl.textContent = "Pipeline failed: " + buf;
+          }
+        }
         buf = "";
       };
+      let pending = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buf = "";
-        const chunk = dec.decode(value, { stream: true });
+        // Do NOT clear `buf` here: an SSE frame can be split across chunks, and
+        // resetting per chunk silently dropped the first half of long events.
+        const chunk = pending + dec.decode(value, { stream: true });
         const lines = chunk.split("\n");
+        pending = lines.pop();          // keep any partial trailing line
         for (const raw of lines) {
           const line = raw.replace(/\r$/, "");
           if (line.startsWith("event:")) { curEvent = line.slice(6).trim(); }
@@ -565,7 +675,10 @@
       }
       flush();
     } catch (e) {
-      progEl.textContent = "Pipeline error: " + e.message;
+      // A genuine transport failure (server stopped, connection dropped).
+      progEl.textContent =
+        "Lost the connection to the Y.A.C.I.N.E server: " + e.message +
+        "\n\nIs it still running? Check the server console for a traceback.";
     }
   }
 

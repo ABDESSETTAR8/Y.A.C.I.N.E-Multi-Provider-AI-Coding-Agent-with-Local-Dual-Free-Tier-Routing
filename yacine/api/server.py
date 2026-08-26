@@ -415,18 +415,37 @@ async def orchestrate(req: OrchestrateRequest, request: Request):
     from sse_starlette.sse import EventSourceResponse
 
     async def event_gen():
+        # EVERYTHING here runs after the SSE response has already begun, so an
+        # uncaught exception cannot become an HTTP error — the connection just
+        # drops and the browser reports a bare "network error" with no cause.
+        # That is why a missing model, a bad project path or any crash inside
+        # the pipeline all looked identical and unactionable in the UI.
         loop = asyncio.get_event_loop()
         queue: asyncio.Queue = asyncio.Queue()
 
         def on_event(e: dict):
             queue.put_nowait(e)
 
-        orch = MultiAgentOrchestrator(
-            base_url=req.base_url,
-            provider=req.provider,
-            workspace_root=Path(req.project_path) if req.project_path else None,
-            on_event=on_event,
-        )
+        def _fail(stage: str, exc: BaseException):
+            _logger.error("orchestrate", f"{stage}: {type(exc).__name__}: {exc}")
+            return {"event": "error", "data": json.dumps({
+                "stage": stage,
+                "error": f"{type(exc).__name__}: {exc}",
+                "hint": _orchestrate_hint(exc, req),
+            })}
+
+        try:
+            orch = MultiAgentOrchestrator(
+                base_url=req.base_url,
+                provider=req.provider,
+                workspace_root=Path(req.project_path) if req.project_path else None,
+                on_event=on_event,
+            )
+        except Exception as e:  # noqa: BLE001
+            yield _fail("starting the pipeline", e)
+            yield {"event": "done", "data": "{}"}
+            return
+
         _ACTIVE_RUNS[id(orch)] = orch
         future = loop.run_in_executor(
             None, lambda: orch.run(req.request),
@@ -448,13 +467,38 @@ async def orchestrate(req: OrchestrateRequest, request: Request):
                          "message": "⏱ Run exceeded the time limit and was stopped.",
                          "data": {"pct": 100, "stage": "orchestrator"}})}
                     break
-        result = future.result()
         _ACTIVE_RUNS.pop(id(orch), None)
+        try:
+            result = future.result()
+        except Exception as e:  # noqa: BLE001
+            yield _fail("running the pipeline", e)
+            yield {"event": "done", "data": "{}"}
+            return
         yield {"event": "result",
                "data": json.dumps(result.to_dict())}
         yield {"event": "done", "data": "{}"}
 
     return EventSourceResponse(event_gen())
+
+
+def _orchestrate_hint(exc: BaseException, req) -> str:
+    """Turn a raw exception into something the user can act on."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    if "connect" in text or "refused" in text or "connecterror" in text:
+        return (f"Ollama does not appear to be running at {req.base_url or 'http://localhost:11434'}. "
+                f"Start it with `ollama serve`.")
+    if "404" in text or "not found" in text:
+        return ("A model the pipeline asked for is not installed. Run "
+                "`ollama list` to see what you have, then `ollama pull <model>`.")
+    if "timeout" in text or "timed out" in text:
+        return ("The model took longer than the configured timeout. Raise "
+                "model.timeout in config/settings.yaml, or use a smaller model.")
+    if "memory" in text or "vram" in text or "oom" in text:
+        return ("The GPU ran out of memory. Lower model.num_ctx in "
+                "config/settings.yaml, or use a smaller model.")
+    if "permission" in text or "refused:" in text:
+        return "A path or command was blocked by the security layer. See the Log tab."
+    return "See the Log tab in the UI, or the server console, for the full traceback."
 
 
 # Registry of in-flight orchestrator runs so the client can Stop them.

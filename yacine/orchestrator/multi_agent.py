@@ -27,7 +27,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from ..core.config import get_settings, ModelConfig
 from ..core.logger import get_logger
@@ -53,6 +53,60 @@ MODEL_PLAN: Dict[str, str] = {
 }
 
 DEFAULT_BASE_URL = "http://localhost:11434"
+
+def installed_models(base_url: str = DEFAULT_BASE_URL, timeout: float = 5.0) -> List[str]:
+    """Model tags Ollama actually has pulled. Empty list if it is unreachable."""
+    try:
+        import httpx
+        r = httpx.get(f"{str(base_url).rstrip('/')}/api/tags", timeout=timeout)
+        if r.status_code != 200:
+            return []
+        return [m.get("name", "") for m in r.json().get("models", [])]
+    except Exception:
+        return []
+
+
+def resolve_model_plan(plan: Dict[str, str], base_url: str = DEFAULT_BASE_URL
+                       ) -> Tuple[Dict[str, str], List[str]]:
+    """Map each pipeline stage to a model that is actually installed.
+
+    The four-agent pipeline asks for four different models. On a machine that
+    has only pulled some of them, the first stage used to fail deep inside the
+    run with a raw 404 from Ollama, which surfaced in the browser as
+    "network error" and told the user nothing.
+
+    Instead: substitute an installed model for any missing one and report the
+    substitutions, so the pipeline runs and the user is told exactly what to
+    pull for the intended behaviour.
+    """
+    have = installed_models(base_url)
+    if not have:
+        return dict(plan), []          # Ollama unreachable: let the run report that
+
+    def matches(tag: str) -> bool:
+        # "qwen2.5:3b" should match an installed "qwen2.5:3b" exactly, and a
+        # bare "qwen2.5" should match "qwen2.5:latest".
+        return tag in have or any(h.split(":")[0] == tag.split(":")[0] for h in have)
+
+    def exact(tag: str) -> str:
+        if tag in have:
+            return tag
+        same = [h for h in have if h.split(":")[0] == tag.split(":")[0]]
+        return same[0] if same else tag
+
+    resolved, notes = {}, []
+    # Prefer a coder-ish model as the stand-in, else whatever is installed.
+    fallback = next((h for h in have if "coder" in h),
+                    next((h for h in have if "qwen" in h), have[0]))
+    for role, tag in plan.items():
+        if matches(tag):
+            resolved[role] = exact(tag)
+        else:
+            resolved[role] = fallback
+            notes.append(f"{role}: '{tag}' is not installed — using '{fallback}' "
+                         f"instead (run `ollama pull {tag}` for the intended model)")
+    return resolved, notes
+
 
 
 @dataclass
@@ -109,6 +163,13 @@ class MultiAgentOrchestrator:
         self.models = dict(MODEL_PLAN)
         if models:
             self.models.update(models)
+        # Substitute installed models for any that are missing, so a machine
+        # that has not pulled all four still runs instead of dying mid-stream.
+        if provider == "ollama":
+            self.models, self._model_notes = resolve_model_plan(
+                self.models, base_url or DEFAULT_BASE_URL)
+        else:
+            self._model_notes = []
         # Workspace: prefer the user's chosen project folder; else a temp dir.
         self._task_id = f"orch_{int(time.time())}_{uuid.uuid4().hex[:6]}"
         if workspace_root:
@@ -307,11 +368,18 @@ class MultiAgentOrchestrator:
         return resp.text.strip()
 
     # -- public entry point ----------------------------------------------
+    def _report_model_plan(self) -> None:
+        """Tell the user about any model substitution, before work starts."""
+        for note in getattr(self, "_model_notes", []):
+            self.logger.error("orchestrator", note)
+            self._emit("progress", "orchestrator", f"⚠ {note}")
+
     def run(self, request: str) -> OrchestratorResult:
         start = time.time()
         result = OrchestratorResult(
             task_id=self._task_id, request=request, success=False)
         self._emit("agent", "orchestrator", f"Starting pipeline for: {request[:120]}")
+        self._report_model_plan()
         self._emit_progress(2, "orchestrator", "Pipeline starting…")
 
         # 1) Architect
