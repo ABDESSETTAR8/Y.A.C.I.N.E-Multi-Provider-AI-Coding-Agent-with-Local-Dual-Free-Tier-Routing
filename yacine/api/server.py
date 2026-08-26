@@ -28,7 +28,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..core.config import get_settings, ModelConfig, Permissions
+from ..core.config import get_settings
 from ..core.logger import EventBus, get_bus, get_logger
 from ..core.engine import AutonomousEngine, TaskResult
 from ..models.manager import ModelManager

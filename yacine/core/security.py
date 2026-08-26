@@ -13,8 +13,14 @@ from typing import List, Optional, Tuple
 
 from .config import get_settings
 
-# Patterns that should never be executed by an autonomous agent without the
-# user taking explicit control (destructive / system-level / exfiltration).
+# Heuristic warning signals, NOT a security boundary.
+#
+# A regex blocklist cannot contain a shell: `rm -rf ~`, `rm -fr /`, extra
+# whitespace, $(...) substitution and base64 indirection all slip past this
+# list, and always will. The real boundaries in this system are the workspace
+# path confinement in resolve_in() and argv-based execution in the tools that
+# build commands from model output. These patterns exist to catch an obvious
+# mistake early and to give the user something readable to approve or reject.
 DANGEROUS_PATTERNS: List[Tuple[str, str]] = [
     (r"\brm\s+-rf\s+/", "Recursive force delete of filesystem root"),
     (r"\bformat\b", "Disk format command"),
@@ -63,6 +69,11 @@ class SecurityEnforcer:
         lowered = command.lower()
         for pattern, reason in DANGEROUS_PATTERNS:
             if re.search(pattern, lowered):
+                # Give the host a chance to ask the user rather than refusing
+                # outright — when no approver is wired, this stays a refusal.
+                if self.interactive_prompt(f"run a destructive command ({reason})",
+                                           command):
+                    return
                 raise SecurityError(
                     f"Blocked potentially destructive command ({reason}): {command!r}"
                 )
@@ -148,8 +159,19 @@ class SecurityEnforcer:
     def check_git_push(self) -> None:
         self.require("git_push", "git push")
 
+    # A callable(action: str, detail: str) -> bool injected by the CLI/UI. When
+    # None (headless, tests, autonomous runs) the answer is a safe refusal.
+    _approver = None
+
+    def set_approver(self, fn) -> None:
+        """Install the callback used to ask the user about a gated action."""
+        self._approver = fn
+
     def interactive_prompt(self, action: str, detail: str) -> bool:
-        """When a permission is off, ask the user. Returns True to proceed."""
-        # In autonomous mode we default to refusing if not permitted, but the
-        # CLI can inject an interactive override. Default: refuse safely.
-        return False
+        """Ask the user to approve a gated action. Returns True to proceed."""
+        if self._approver is None:
+            return False
+        try:
+            return bool(self._approver(action, detail))
+        except Exception:
+            return False

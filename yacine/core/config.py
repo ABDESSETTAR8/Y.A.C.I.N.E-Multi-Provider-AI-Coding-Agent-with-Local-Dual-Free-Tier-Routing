@@ -34,6 +34,17 @@ DEFAULT_PROJECT_ROOT = _app_base_dir()
 # Permission model (security: every sensitive action is gated)
 # --------------------------------------------------------------------------
 class Permissions(BaseModel):
+    """Which sensitive actions the agent may take.
+
+    NOTE ON DEFAULTS: everything except git_push is ON, so that the agent works
+    out of the box. That means these flags are a way for a user to RESTRICT the
+    agent, not a barrier that protects an unconfigured install — the actual
+    boundaries are workspace path confinement and argv-based execution. Set
+    execute_command/delete_file to false in config/settings.yaml for a
+    read-mostly agent, and wire SecurityEnforcer.set_approver() to be asked
+    instead of refused.
+    """
+
     read_file: bool = True
     write_file: bool = True
     execute_command: bool = True
@@ -181,6 +192,8 @@ def load_config(config_path: Optional[str] = None) -> Settings:
         data.setdefault("model", {})["api_key"] = env["YACINE_MODEL_API_KEY"]
     if env.get("YACINE_PROJECT_ROOT"):
         data["project_root"] = Path(env["YACINE_PROJECT_ROOT"])
+    if env.get("YACINE_TELEGRAM_TOKEN"):
+        data.setdefault("telegram", {})["bot_token"] = env["YACINE_TELEGRAM_TOKEN"]
     if env.get("YACINE_PERM_GIT_PUSH"):
         data.setdefault("permissions", {})["git_push"] = env["YACINE_PERM_GIT_PUSH"].lower() in ("1", "true", "yes")
     if env.get("YACINE_PERM_INTERNET"):
@@ -192,6 +205,17 @@ def load_config(config_path: Optional[str] = None) -> Settings:
     return settings
 
 
+# Fields that must never be written to disk, as (section, key) pairs. A secret
+# supplied through the environment should stay in the environment: round
+# -tripping it through save_config() turns an env-only credential into a
+# file-resident one, in a file that is easy to sync, zip or commit by mistake.
+SECRET_FIELDS = (
+    ("model", "api_key"),
+    ("chat_model", "api_key"),
+    ("telegram", "bot_token"),
+)
+
+
 def save_config(settings: Settings, config_path: Optional[str] = None) -> Path:
     path = Path(config_path or getattr(settings, "__config_path__",
                                        DEFAULT_PROJECT_ROOT / "config" / "settings.yaml"))
@@ -201,22 +225,48 @@ def save_config(settings: Settings, config_path: Optional[str] = None) -> Path:
     payload["project_root"] = str(payload["project_root"])
     for k in ("workspace_dir", "data_dir", "logs_dir", "plugins_dir"):
         payload[k] = str(payload[k])
+    for section, key in SECRET_FIELDS:
+        if isinstance(payload.get(section), dict):
+            payload[section].pop(key, None)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(payload, f, sort_keys=False)
+        f.write("\n# Secrets are intentionally not written here. Set them in the\n"
+                "# environment: YACINE_MODEL_API_KEY, YACINE_TELEGRAM_TOKEN.\n")
     return path
 
 
 # A module-level singleton accessor (lazily initialised).
+#
+# Keyed BY PATH: the previous version honoured `config_path` only on the very
+# first call, so once api/server.py had called get_settings() at import time,
+# every later request for a specific config file silently got the default one
+# — which is why AutonomousEngine(config_path=...) had no effect in the server.
 _CONFIG: Optional[Settings] = None
+_CONFIG_CACHE: Dict[str, Settings] = {}
+
+
+def _cache_key(config_path: Optional[str]) -> str:
+    path = config_path or os.environ.get("YACINE_CONFIG") or str(
+        DEFAULT_PROJECT_ROOT / "config" / "settings.yaml")
+    return str(Path(path).expanduser())
 
 
 def get_settings(config_path: Optional[str] = None) -> Settings:
+    """Return settings for `config_path`, loading and caching per path."""
     global _CONFIG
-    if _CONFIG is None:
-        _CONFIG = load_config(config_path)
-    return _CONFIG
+    key = _cache_key(config_path)
+    settings = _CONFIG_CACHE.get(key)
+    if settings is None:
+        settings = load_config(config_path)
+        _CONFIG_CACHE[key] = settings
+    # Keep the legacy "current settings" pointer meaningful for callers that
+    # mutate it directly (the API server and several tests do).
+    if _CONFIG is None or config_path is not None:
+        _CONFIG = settings
+    return _CONFIG if config_path is None and _CONFIG is not None else settings
 
 
 def reset_settings() -> None:
     global _CONFIG
     _CONFIG = None
+    _CONFIG_CACHE.clear()

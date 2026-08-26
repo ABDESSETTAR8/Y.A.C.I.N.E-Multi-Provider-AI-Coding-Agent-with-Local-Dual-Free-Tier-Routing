@@ -5,13 +5,11 @@ rotating log file and to an in-memory ring buffer that the UI/API can stream.
 """
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .config import get_settings

@@ -57,13 +57,23 @@ class Plugin:
     def load(self) -> bool:
         """Import the entrypoint module safely. Returns True on success.
 
-        On any failure the error is recorded, a warning isMessage delivered,
-        and ``False`` is returned — the host must never crash here.
+        On any failure the error is recorded, a warning is logged, and
+        ``False`` is returned — the host must never crash here.
         """
         self.module = None
         self.error = None
 
-        entry = (self.path / self.entrypoint)
+        # The entrypoint comes from plugin.yaml, so keep it inside the plugin
+        # folder: "../../something.py" must not turn discovery into an
+        # arbitrary-file import.
+        try:
+            entry = (self.path / self.entrypoint).resolve()
+            if self.path.resolve() not in entry.parents:
+                raise ValueError("entrypoint escapes the plugin folder")
+        except (ValueError, OSError) as e:
+            self.error = f"invalid entrypoint {self.entrypoint!r}: {e}"
+            logger.warning("Plugin %s: %s", self.name, self.error)
+            return False
         if not entry.is_file():
             self.error = f"entrypoint {self.entrypoint!r} not found in {self.path}"
             logger.warning("Plugin %s: %s", self.name, self.error)

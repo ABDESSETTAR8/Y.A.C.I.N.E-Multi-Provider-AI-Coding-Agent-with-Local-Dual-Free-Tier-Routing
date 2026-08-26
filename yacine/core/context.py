@@ -221,7 +221,7 @@ class ContextEngine:
         try:
             import subprocess
             r = subprocess.run(
-                ["git", "-C", str(self.root), "log", f"--oneline", f"-{limit}"],
+                ["git", "-C", str(self.root), "log", "--oneline", f"-{limit}"],
                 capture_output=True, text=True, timeout=20,
             )
             if r.returncode != 0:

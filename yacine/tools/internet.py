@@ -12,6 +12,43 @@ from urllib.parse import quote_plus
 
 import httpx
 
+from ..core.security import SecurityError
+
+
+def guard_url(url: str) -> None:
+    """Reject URLs that point back into the local machine or network.
+
+    Without this the agent can drive its own API (which executes shell
+    commands), read the Ollama admin endpoints, reach a cloud metadata service,
+    or scan the user's LAN — and every response is fed straight back into the
+    prompt, so a malicious page can steer the next tool call.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise SecurityError(f"Only http/https URLs are allowed (got {parsed.scheme!r}).")
+    host = parsed.hostname
+    if not host:
+        raise SecurityError(f"URL has no host: {url!r}")
+
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or
+                                   (443 if parsed.scheme == "https" else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        raise SecurityError(f"Could not resolve {host!r}: {e}")
+
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise SecurityError(
+                f"Refusing to fetch {url!r}: {host} resolves to the non-public "
+                f"address {ip}. Internal services are not reachable from tools.")
+
 from .base import Tool, ToolResult
 from ..core.security import SecurityEnforcer
 
@@ -29,13 +66,35 @@ class HttpRequestTool(Tool):
         "required": ["url"],
     }
 
+    # Cap the download so a huge or endless response cannot exhaust memory.
+    MAX_BYTES = 5 * 1024 * 1024
+    MAX_REDIRECTS = 5
+
     def run(self, url: str, max_chars: int = 8000) -> ToolResult:
-        SecurityEnforcer().check_internet(url)
         try:
-            with httpx.Client(timeout=20, follow_redirects=True) as c:
-                r = c.get(url, headers={"User-Agent": "YACINE-Agent/1.0"})
+            SecurityEnforcer().check_internet(url)
+        except SecurityError as e:
+            return ToolResult(ok=False, output=f"Refused: {e}")
+        try:
+            # Redirects are followed MANUALLY so that every hop is re-checked:
+            # an allowed public URL can otherwise redirect straight to
+            # 127.0.0.1 or a cloud metadata endpoint.
+            current = url
+            with httpx.Client(timeout=20, follow_redirects=False) as c:
+                for _ in range(self.MAX_REDIRECTS + 1):
+                    guard_url(current)
+                    r = c.get(current, headers={"User-Agent": "YACINE-Agent/1.0"})
+                    if r.is_redirect and r.headers.get("location"):
+                        current = str(httpx.URL(current).join(r.headers["location"]))
+                        continue
+                    break
+                else:
+                    return ToolResult(ok=False, output="Too many redirects.")
                 r.raise_for_status()
-                text = r.text
+                raw = r.content[: self.MAX_BYTES]
+                text = raw.decode(r.encoding or "utf-8", errors="ignore")
+        except SecurityError as e:
+            return ToolResult(ok=False, output=f"Refused: {e}")
         except Exception as e:
             return ToolResult(ok=False, output=f"Request failed: {e}")
         # Strip HTML tags crudely to get readable text.
@@ -44,7 +103,7 @@ class HttpRequestTool(Tool):
         text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         return ToolResult(ok=True, output=text[:max_chars],
-                          data={"status": 200, "url": url})
+                          data={"status": r.status_code, "url": current})
 
 
 class WebSearchTool(Tool):

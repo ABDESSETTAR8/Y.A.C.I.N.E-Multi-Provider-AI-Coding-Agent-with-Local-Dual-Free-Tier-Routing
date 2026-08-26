@@ -6,7 +6,7 @@ and can optionally stream tokens.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterator, List, Optional
+from typing import Iterator, List
 
 from .types import Message, ModelResponse, CompletionChunk
 

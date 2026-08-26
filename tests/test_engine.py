@@ -13,9 +13,7 @@ proving that:
 """
 from __future__ import annotations
 
-import os
 import sys
-import json
 from pathlib import Path
 
 import pytest
@@ -24,14 +22,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from yacine.core.config import ModelConfig, Permissions, get_settings
+from yacine.core.config import ModelConfig
 from yacine.models.manager import ModelManager
-from yacine.models.scripted import ScriptedProvider
-from yacine.tools.registry import build_tool_registry, make_sandbox
+from yacine.tools.registry import build_tool_registry
 from yacine.tools.sandbox import Sandbox
 from yacine.core.context import ContextEngine
 from yacine.memory.store import MemoryStore, HashedEmbedder
-from yacine.core.engine import AutonomousEngine, TaskResult
+from yacine.core.engine import AutonomousEngine
 
 FIXTURE = ROOT / "tests" / "fixtures" / "scripted_task.yaml"
 
@@ -120,7 +117,7 @@ def test_memory_add_search_persist(tmp_path):
 # 5) FULL AUTONOMOUS LOOP (self-healing) — the headline proof
 # --------------------------------------------------------------------------
 def test_autonomous_loop_completes_task_with_self_heal(scripted_manager, tmp_path):
-    from yacine.core.config import get_settings, Settings
+    from yacine.core.config import get_settings
     settings = get_settings()
     # Point workspace at a temp dir for isolation.
     settings.workspace_dir = tmp_path / "workspace"

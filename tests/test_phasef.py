@@ -4,14 +4,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from yacine.memory.longterm import LongTermMemory, make_embedder, memory_tokens
-from yacine.tools.sandbox import Sandbox
-from yacine.core.security import SecurityEnforcer
+from yacine.memory.longterm import LongTermMemory, make_embedder
 from yacine.tools.vision import VisionTool
 from yacine.tools.voice import TextToSpeechTool, SpeechToTextTool
 

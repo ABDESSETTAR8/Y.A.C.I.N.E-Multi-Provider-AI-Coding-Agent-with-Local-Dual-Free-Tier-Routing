@@ -15,8 +15,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from .base import Tool, ToolResult
 from .sandbox import Sandbox
@@ -188,5 +187,5 @@ class DBMigrateTool(Tool):
             up.append(f"CREATE TABLE IF NOT EXISTS {table} ({col_defs});")
             down.append(f"DROP TABLE IF EXISTS {table};")
         migration = f"-- migration: {name}\n-- UP\n" + "\n".join(up) + \
-                    f"\n\n-- DOWN\n" + "\n".join(down) + "\n"
+                    "\n\n-- DOWN\n" + "\n".join(down) + "\n"
         return ToolResult(ok=True, output=migration, data={"name": name})

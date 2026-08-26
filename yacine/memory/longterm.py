@@ -13,11 +13,11 @@ All offline-safe: nothing breaks if sentence-transformers is absent.
 """
 from __future__ import annotations
 
-import datetime
 import importlib
-from typing import List, Optional
+import logging
+from typing import List
 
-from .store import MemoryStore, Memory, HashedEmbedder, EMBED_DIM
+from .store import MemoryStore, Memory, HashedEmbedder
 
 
 class STEmbedder:
@@ -40,9 +40,16 @@ def make_embedder(prefer: str = "auto") -> object:
     if prefer in ("auto", "st"):
         try:
             return STEmbedder()
-        except Exception:
+        except Exception as e:  # noqa: BLE001
             if prefer == "st":
                 raise
+            # Falling back is fine, doing it silently is not: recall quality
+            # differs a lot between real embeddings and the hashed stand-in,
+            # and the user should be able to see which one is in use.
+            logging.getLogger("yacine.memory").info(
+                "sentence-transformers unavailable (%s: %s); using the hashed "
+                "embedder. Install sentence-transformers for better recall.",
+                type(e).__name__, e)
             return HashedEmbedder()
     return HashedEmbedder()
 

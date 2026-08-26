@@ -10,7 +10,7 @@ executes the steps and tracks progress against the plan.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 from ..models.types import Message
 from ..models.manager import ModelManager

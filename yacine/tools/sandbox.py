@@ -17,12 +17,10 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from ..core.security import SecurityEnforcer
 

@@ -15,10 +15,9 @@ It is sent only to api.telegram.org and never logged.
 """
 from __future__ import annotations
 
-import json
 import os
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Optional
 
 import httpx
 
@@ -139,7 +138,6 @@ class TelegramChannel:
         if not text.startswith("/"):
             return
         user_id = str(msg.get("from", {}).get("id", ""))
-        chat_id = str(msg.get("chat", {}).get("id", ""))
         # If allowed_users set, enforce; channel posts have no 'from'.
         if self.cfg.allowed_users and user_id not in self.cfg.allowed_users:
             return

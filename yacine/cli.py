@@ -26,8 +26,8 @@ from rich.markdown import Markdown
 from rich.table import Table
 from rich.prompt import Prompt
 
-from .core.config import get_settings, load_config, save_config, ModelConfig, Permissions
-from .core.logger import get_logger, get_bus
+from .core.config import get_settings, load_config, save_config
+from .core.logger import get_logger
 from .core.engine import AutonomousEngine
 from .models.manager import ModelManager
 from .memory.store import MemoryStore
@@ -46,7 +46,6 @@ def _print_banner() -> None:
 
 def cmd_chat(args) -> int:
     _print_banner()
-    settings = get_settings()
     manager = ModelManager(logger=logger)
     from ..tools.registry import build_tool_registry, make_sandbox
     from ..agents.agent import run_agent
@@ -74,7 +73,6 @@ def cmd_chat(args) -> int:
 
 def cmd_run(args) -> int:
     _print_banner()
-    settings = get_settings()
     engine = AutonomousEngine(logger=logger)
     console.print(f"[bold]Autonomous task:[/bold] {args.request}\n")
     with console.status("[cyan]Working autonomously (think → plan → implement → test → heal → deliver)...[/cyan]"):
@@ -255,7 +253,7 @@ def cmd_models(args) -> int:
 def cmd_doctor(args) -> int:
     t = Table(title="Environment check")
     t.add_column("check"); t.add_column("status"); t.add_column("detail")
-    import shutil, subprocess
+    import shutil
     py = shutil.which("python") or shutil.which("python3")
     t.add_row("python", "ok" if py else "missing", str(py))
     ollama = shutil.which("ollama")
@@ -343,8 +341,8 @@ def build_parser() -> argparse.ArgumentParser:
     pcf.add_argument("--set-provider", default=None)
     pcf.add_argument("--set-perm", default=None, help="key=value (e.g. git_push=true)")
 
-    pmod = sub.add_parser("models", help="Check model providers")
-    pdoc = sub.add_parser("doctor", help="Environment sanity check")
+    sub.add_parser("models", help="Check model providers")
+    sub.add_parser("doctor", help="Environment sanity check")
     return p
 
 

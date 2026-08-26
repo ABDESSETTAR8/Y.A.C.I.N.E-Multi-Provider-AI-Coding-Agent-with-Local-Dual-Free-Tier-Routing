@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from yacine.tools.mcp import connect_mcp, MCPClient
+from yacine.tools.mcp import connect_mcp
 from yacine.tools.sandbox import Sandbox
 from yacine.core.security import SecurityEnforcer
 

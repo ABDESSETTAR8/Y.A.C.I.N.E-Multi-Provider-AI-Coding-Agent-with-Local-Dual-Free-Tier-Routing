@@ -11,11 +11,9 @@ block delivery (e.g. a security finding) or just record a nit.
 """
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from ..tools.sandbox import Sandbox
 

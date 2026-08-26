@@ -8,9 +8,9 @@ All functions are sandbox-bound and degrade gracefully.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from ..tools.sandbox import Sandbox
 

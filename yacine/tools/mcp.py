@@ -19,13 +19,10 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
-import uuid
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..tools.base import Tool, ToolResult
 from ..tools.sandbox import Sandbox
-from ..core.security import SecurityEnforcer
 
 
 class MCPClient:

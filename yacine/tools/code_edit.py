@@ -43,7 +43,11 @@ class _EditToolBase(Tool):
     def _backup(self, target: Path, text: str) -> Path:
         """Store a timestamped copy and return its path."""
         rel = target.relative_to(Path(self.sandbox.workspace).resolve())
-        stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
+        # The suffix must sort chronologically as a STRING, because that is how
+        # the newest backup is found. A wrapping millisecond field (…-987 then
+        # …-012) sorts the older copy last and makes undo restore the wrong
+        # version — so use a fixed-width monotonic nanosecond counter.
+        stamp = f"{time.strftime('%Y%m%d-%H%M%S')}.{time.time_ns():020d}"
         safe = str(rel).replace("/", "__").replace("\\", "__")
         dest = self._backup_dir() / f"{safe}.{stamp}.bak"
         dest.write_text(text, encoding="utf-8")

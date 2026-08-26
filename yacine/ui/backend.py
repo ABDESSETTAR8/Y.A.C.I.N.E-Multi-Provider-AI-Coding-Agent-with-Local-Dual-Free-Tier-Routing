@@ -12,15 +12,14 @@ Routes added:
 """
 from __future__ import annotations
 
-import os
 import sys
 import platform
 import shutil
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 

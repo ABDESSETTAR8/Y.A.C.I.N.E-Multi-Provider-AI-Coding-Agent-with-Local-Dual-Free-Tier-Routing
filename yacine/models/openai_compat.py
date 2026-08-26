@@ -6,7 +6,7 @@ Just point base_url at it (e.g. LM Studio on http://localhost:1234/v1).
 from __future__ import annotations
 
 import json
-from typing import Iterator, List, Optional
+from typing import Iterator, List
 
 import httpx
 

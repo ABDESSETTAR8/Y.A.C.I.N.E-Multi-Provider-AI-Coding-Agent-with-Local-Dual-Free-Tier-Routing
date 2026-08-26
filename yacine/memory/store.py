@@ -17,13 +17,15 @@ This keeps the system fully offline and dependency-free by default.
 from __future__ import annotations
 
 import json
+import os
 import math
 import re
 import threading
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from ..core.config import get_settings
 
@@ -106,21 +108,47 @@ class MemoryStore:
                     continue
 
     def _save(self) -> None:
+        """Rewrite the whole store ATOMICALLY.
+
+        Opening the real file in "w" truncates it first, so a crash — or a
+        concurrent reader, and the API server handles requests on a thread
+        pool — during the write window leaves an empty or half-written store.
+        Writing to a sibling temp file and renaming makes the swap atomic:
+        readers see either the old file or the new one, never a torn one.
+        """
         with self._lock:
-            with open(self.path, "w", encoding="utf-8") as f:
-                for m in self._memories:
-                    f.write(json.dumps(m.to_dict(), ensure_ascii=False) + "\n")
+            self._write_all_locked()
+
+    def _write_all_locked(self) -> None:
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            for m in self._memories:
+                f.write(json.dumps(m.to_dict(), ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.path)
+
+    def _append(self, mem: "Memory") -> None:
+        """Append one record instead of rewriting the file.
+
+        add() previously re-serialised every memory on every call, which is
+        quadratic as the store grows and multiplies the truncate window above
+        by the number of writes.
+        """
+        with self._lock:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(mem.to_dict(), ensure_ascii=False) + "\n")
 
     # -- API --------------------------------------------------------------
     def add(self, content: str, category: str = "fact", tags: Optional[List[str]] = None,
             source: str = "agent") -> Memory:
-        mid = f"mem_{len(self._memories)}_{int(datetime.now().timestamp())}"
+        mid = f"mem_{uuid.uuid4().hex[:10]}_{int(datetime.now().timestamp())}"
         vec = self.embedder.embed(content)
         mem = Memory(id=mid, category=category, content=content,
                      embedding=vec, tags=tags or [], source=source)
         with self._lock:
             self._memories.append(mem)
-        self._save()
+        self._append(mem)
         if self.logger:
             self.logger.info("memory", f"+ [{category}] {content[:80]}")
         return mem

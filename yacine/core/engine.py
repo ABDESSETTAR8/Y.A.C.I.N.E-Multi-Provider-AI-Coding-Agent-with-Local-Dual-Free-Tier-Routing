@@ -18,7 +18,6 @@ backends, or the scripted provider used in tests.
 """
 from __future__ import annotations
 
-import json
 import re
 import time
 import uuid
@@ -30,7 +29,6 @@ from ..core.config import get_settings
 from ..core.context import ContextEngine
 from ..core.logger import get_logger
 from ..models.manager import ModelManager
-from ..models.types import Message
 from ..tools.registry import build_tool_registry, make_sandbox
 from ..tools.interpreter import python_executable
 from ..tools.sandbox import Sandbox
@@ -118,8 +116,8 @@ class AutonomousEngine:
         if self.on_event:
             try:
                 self.on_event({"kind": kind, "source": source, "message": message, "data": data})
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001
+                self.logger.error("events", f"on_event callback failed: {e}")
 
     # -- context ----------------------------------------------------------
     def _build_context(self, project_path: Path) -> str:
@@ -414,22 +412,55 @@ class AutonomousEngine:
         return False, heals
 
     # -- helpers ----------------------------------------------------------
+    # Guardrails for copying a user project into the task workspace.
+    MAX_SYNC_FILES = 5000
+    MAX_SYNC_BYTES = 512 * 1024 * 1024
+
     def _sync_into_sandbox(self, src: Path, dst: Path) -> None:
         import shutil
         # Copy only source files (skip heavy dirs) into the sandbox.
-        skip = {".git", "__pycache__", ".venv", "node_modules", ".pytest_cache"}
+        skip = {".git", "__pycache__", ".venv", "venv", "node_modules",
+                ".pytest_cache", ".mypy_cache", "dist", "build",
+                ".yacine_backups"}
+        src = Path(src).resolve()
+        copied = failed = 0
+        total_bytes = 0
+        truncated = ""
         for item in src.rglob("*"):
             if any(part in skip for part in item.parts):
                 continue
-            rel = item.relative_to(src)
-            target = dst / rel
-            if item.is_file():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    shutil.copy2(item, target)
-                except Exception:
-                    pass
-        self.logger.info("loop", f"Synced project into sandbox {dst}")
+            if not item.is_file():
+                continue
+            # Never follow a symlink out of the project being copied.
+            try:
+                if item.is_symlink() and src not in item.resolve().parents:
+                    continue
+                size = item.stat().st_size
+            except OSError as e:
+                failed += 1
+                self.logger.error("loop", f"Skipped {item.name}: {e}")
+                continue
+            if copied >= self.MAX_SYNC_FILES or \
+                    total_bytes + size > self.MAX_SYNC_BYTES:
+                truncated = (f" STOPPED at {copied} files / "
+                             f"{total_bytes // (1024 * 1024)} MB — the project is "
+                             f"larger than the sync limits; not all of it was copied.")
+                break
+            target = dst / item.relative_to(src)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(item, target)
+                copied += 1
+                total_bytes += size
+            except OSError as e:
+                failed += 1
+                self.logger.error("loop", f"Could not copy {item.name}: {e}")
+        msg = f"Synced {copied} file(s) into sandbox {dst}"
+        if failed:
+            msg += f" ({failed} could not be copied)"
+        self.logger.info("loop", msg + truncated)
+        if truncated:
+            self.logger.error("loop", truncated.strip())
 
     def _infer_verify_command(self) -> Optional[str]:
         ws = self.sandbox.workspace
@@ -467,8 +498,9 @@ class AutonomousEngine:
             msg = message or f"YACINE: {result.request[:70]}"
             git.execute({"operation": "commit", "args": msg})
             result.logs.append(f"Committed: {msg[:80]}")
-        except Exception as e:
-            result.logs.append(f"(commit skipped: {e})")
+        except Exception as e:  # noqa: BLE001
+            result.logs.append(f"(commit skipped: {type(e).__name__}: {e})")
+            self.logger.error("loop", f"Auto-commit failed: {type(e).__name__}: {e}")
 
     def _git_diff(self) -> str:
         """Return a textual diff/changed-file summary for the review agents."""
@@ -512,7 +544,7 @@ class AutonomousEngine:
                       f"Find official documentation / canonical usage for any external "
                       f"API, library, or framework involved. Summarise ONLY what the "
                       f"documentation supports, rank sources by reliability, and cite "
-                      f"URLs. Never invent APIs. Keep it under 400 words.\\n\\n"
+                      f"URLs. Never invent APIs. Keep it under 400 words.\n\n"
                       f"REQUEST: {request}"),
                 context="", max_tool_iters=10, logger=self.logger, memory=self.memory,
             )

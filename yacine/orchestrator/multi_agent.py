@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from ..core.config import get_settings, ModelConfig
-from ..core.logger import get_logger, get_bus
+from ..core.logger import get_logger
 from ..models.manager import ModelManager
 from ..models.types import Message
 from ..tools.registry import build_tool_registry, make_sandbox
@@ -135,8 +135,8 @@ class MultiAgentOrchestrator:
             try:
                 self.on_event({"kind": kind, "source": source,
                                "message": message, "data": data})
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001
+                self.logger.error("events", f"on_event callback failed: {e}")
 
     def _emit_progress(self, pct: int, stage: str, label: str) -> None:
         """Emit a real progress percentage for the UI (0-100)."""
