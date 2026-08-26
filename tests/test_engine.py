@@ -169,14 +169,19 @@ def test_api_health_and_run(scripted_manager):
     # Also point settings workspace to a temp dir.
     srv._settings.workspace_dir = ROOT / "tests" / "tmp_api_ws"
     srv._settings.workspace_dir.mkdir(parents=True, exist_ok=True)
-    client = TestClient(api_app)
+    client = TestClient(api_app, base_url="http://127.0.0.1:8765",
+                        headers={"X-API-Key": srv.API_KEY})
+    # Unauthenticated requests must be rejected: this server drives a shell.
+    unauth = TestClient(api_app, base_url="http://127.0.0.1:8765")
+    assert unauth.get("/health").status_code == 401
+    assert unauth.post("/run", json={"request": "x"}).status_code == 401
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
     assert "model_provider" in body
     # Run a task via API.
     r2 = client.post("/run", json={"request": "make a calc module",
-                                   "verify_command": "python -m pytest -q",
+                                   "verify_command": f'"{sys.executable}" -m pytest -q',
                                    "auto_commit": False})
     assert r2.status_code == 200
     assert r2.json()["success"] is True
@@ -214,22 +219,31 @@ def test_context_git_history_and_style(tmp_path):
     import subprocess
     (tmp_path / "app.py").write_text(
         "def main():\n    pass\n\n\ndef helper(x: int) -> int:\n    return x\n")
+    # Pin the identity: on a machine with no global user.email the commit
+    # would fail, the except would swallow it, and the assertion below would
+    # fail for a reason that has nothing to do with the code under test.
+    ident = ["-c", "user.name=Test", "-c", "user.email=test@example.com"]
+    committed = False
     try:
         subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=True,
                        capture_output=True)
         subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True,
                        capture_output=True)
-        subprocess.run(["git", "-C", str(tmp_path), "commit", "-q", "-m", "init app"],
+        subprocess.run(["git", "-C", str(tmp_path)] + ident +
+                       ["commit", "-q", "-m", "init app"],
                        check=True, capture_output=True)
-    except Exception:
-        pass
+        committed = True
+    except (OSError, subprocess.CalledProcessError):
+        # git genuinely unavailable on this machine -> the history assertion
+        # below is skipped, but the style assertion still runs.
+        committed = False
     ce = ContextEngine(tmp_path)
     ce.index()
     hist = ce.git_history(limit=5)
     style = ce.coding_style()
     # Either we have a git repo (history present) or not; style must still detect python.
     assert style.get("language") == "python"
-    if ce.is_git_repo():
+    if committed and ce.is_git_repo():
         assert any("init app" in h for h in hist)
 
 

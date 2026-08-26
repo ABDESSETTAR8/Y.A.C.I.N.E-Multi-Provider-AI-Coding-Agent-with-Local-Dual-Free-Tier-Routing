@@ -1,10 +1,15 @@
-"""Execution sandbox.
+"""Execution workspace.
 
-Per the spec: never execute directly inside the project; create isolated
-workspaces, capture stdout/stderr/return codes, enforce timeouts, and report
-resource usage. We implement isolation via a dedicated workspace directory
-(named per task) plus subprocess timeout + a memory ceiling via
-`resource` (POSIX) where available, and taskkill/CloseHandle on Windows.
+Commands never run directly inside the user's project: each task gets its own
+workspace directory, and stdout/stderr/return codes/durations are captured.
+
+SCOPE OF THE ISOLATION — be precise about this, because the name invites
+over-trust. What is enforced here is: a dedicated working directory, a wall
+-clock timeout, an allowlisted environment (no credentials are inherited),
+and an address-space ceiling via `resource` on POSIX. What is NOT enforced:
+user, namespace, network or filesystem isolation, and on Windows not even
+the memory ceiling. A process started here can still read the user's disk.
+For untrusted code, run the whole application inside a container or VM.
 
 This is the substrate the Terminal/Browser tools run on.
 """
@@ -56,23 +61,58 @@ class Sandbox:
 
     def __init__(self, workspace: Path, security: Optional[SecurityEnforcer] = None,
                  timeout: int = 300, mem_mb: int = 4096, logger=None) -> None:
-        self.workspace = Path(workspace)
+        self.workspace = Path(workspace).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.security = security or SecurityEnforcer()
         self.timeout = timeout
         self.mem_mb = mem_mb
         self.logger = logger
 
-    def run(self, command: str, cwd: Optional[Path] = None, env: Optional[dict] = None,
-            shell: bool = True, timeout: Optional[int] = None) -> ExecResult:
-        self.security.check_command(command)
-        work = Path(cwd) if cwd else self.workspace
-        work.mkdir(parents=True, exist_ok=True)
+    # Environment variables an agent-run subprocess is allowed to inherit.
+    # Everything else (API keys, cloud credentials, SSH agent sockets, tokens)
+    # is withheld: the code being executed was written moments ago by a model
+    # acting on untrusted repository content.
+    ENV_ALLOWLIST = (
+        "PATH", "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP",
+        "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM",
+        "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES",
+        "PROGRAMDATA", "SHELL", "USER", "LOGNAME",
+    )
 
-        run_env = dict(os.environ)
+    def _build_env(self, env: Optional[dict] = None) -> dict:
+        """Minimal allowlisted environment for a subprocess."""
+        run_env = {k: v for k, v in os.environ.items() if k in self.ENV_ALLOWLIST}
         run_env["PYTHONUNBUFFERED"] = "1"
+        # Never let a child re-enter the agent's own config or credentials.
+        run_env.pop("YACINE_CONFIG", None)
         if env:
             run_env.update(env)
+        return run_env
+
+    def run(self, command, cwd: Optional[Path] = None, env: Optional[dict] = None,
+            shell: Optional[bool] = None, timeout: Optional[int] = None) -> ExecResult:
+        """Run a command in the workspace.
+
+        ``command`` may be a string (run through the shell) or a list of
+        arguments (run WITHOUT a shell). Callers that compose a command from
+        model output must pass a list: string interpolation into a shell
+        command is a command-injection vector.
+        """
+        is_list = isinstance(command, (list, tuple))
+        if shell is None:
+            shell = not is_list
+        if is_list and shell:
+            raise ValueError("Refusing to run an argv list through the shell.")
+        display = " ".join(str(c) for c in command) if is_list else str(command)
+        self.security.check_command(display)
+        work = Path(cwd) if cwd else self.workspace
+        # Confine the working directory to the workspace.
+        work = self.security.check_path(work, for_write=False, root=self.workspace) \
+            if Path(work) != Path(self.workspace) else Path(self.workspace)
+        work.mkdir(parents=True, exist_ok=True)
+
+        run_env = self._build_env(env)
 
         # Build the subprocess with a memory cap via a pre-exec hook (POSIX).
         preexec = None
@@ -88,11 +128,11 @@ class Sandbox:
 
         to = timeout if timeout is not None else self.timeout
         if self.logger:
-            self.logger.tool("sandbox", f"$ {command[:200]} (cwd={work})")
+            self.logger.tool("sandbox", f"$ {display[:200]} (cwd={work})")
         start = time.time()
         try:
             proc = subprocess.run(
-                command,
+                list(command) if is_list else command,
                 shell=shell,
                 cwd=str(work),
                 env=run_env,
@@ -122,18 +162,23 @@ class Sandbox:
             self.logger.tool("sandbox", f"-> exit={res.returncode} t={res.duration:.2f}s")
         return res
 
+    def resolve(self, rel: str) -> Path:
+        """Resolve `rel` strictly inside the workspace (raises SecurityError)."""
+        return self.security.resolve_in(self.workspace, rel)
+
     def write_file(self, rel: str, content: str) -> Path:
-        """Write a file inside the sandbox (security-gated)."""
-        target = self.workspace / rel
-        self.security.check_path(target, for_write=True)
+        """Write a file inside the sandbox (confined + security-gated)."""
+        target = self.security.check_path(Path(rel), for_write=True, root=self.workspace)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return target
 
     def read_file(self, rel: str) -> str:
-        target = self.workspace / rel
-        self.security.check_path(target, for_write=False)
+        target = self.security.check_path(Path(rel), for_write=False, root=self.workspace)
         return target.read_text(encoding="utf-8", errors="ignore")
 
     def exists(self, rel: str) -> bool:
-        return (self.workspace / rel).exists()
+        try:
+            return self.resolve(rel).exists()
+        except Exception:
+            return False

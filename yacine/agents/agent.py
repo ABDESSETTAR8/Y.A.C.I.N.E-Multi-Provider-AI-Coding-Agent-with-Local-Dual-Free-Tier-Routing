@@ -77,8 +77,60 @@ class Agent:
             return self.tools.schemas()
         return None
 
+    # A single tool result must not be able to swallow the context window.
+    # read_file returns whole files, search_code up to 200 lines, terminal the
+    # full stdout AND stderr — and every one of those used to be appended to
+    # the transcript verbatim and kept forever.
+    MAX_RESULT_CHARS = 4000
+    # Turns to keep before older ones are elided. The system prompt and the
+    # original task are always retained.
+    KEEP_RECENT_TURNS = 12
+
+    @classmethod
+    def _clip(cls, text: str, limit: int = 0) -> str:
+        """Keep the head and tail of long output; elide the middle."""
+        limit = limit or cls.MAX_RESULT_CHARS
+        if len(text) <= limit:
+            return text
+        head = text[: int(limit * 0.6)]
+        tail = text[-int(limit * 0.3):]
+        dropped = len(text) - len(head) - len(tail)
+        return f"{head}\n\n... [{dropped} characters elided] ...\n\n{tail}"
+
     def _format_tool_result(self, name: str, result) -> str:
-        return f"TOOL RESULT [{name}]:\n{str(result)}"
+        return f"TOOL RESULT [{name}]:\n{self._clip(str(result))}"
+
+    def _trim(self, messages: List[Message]) -> List[Message]:
+        """Keep the transcript inside a workable window.
+
+        Retains the system prompt and the first user turn (the task itself),
+        then the most recent N turns, replacing what was dropped with a marker
+        so the model knows history was elided rather than never existed.
+        """
+        if len(messages) <= self.KEEP_RECENT_TURNS + 2:
+            return messages
+        head = messages[:2]
+        recent = messages[-self.KEEP_RECENT_TURNS:]
+        # Never open the retained window on an orphaned tool result.
+        while recent and recent[0].role == "tool":
+            recent = recent[1:]
+        dropped = len(messages) - len(head) - len(recent)
+        if dropped <= 0:
+            return messages
+        marker = Message(
+            role="user",
+            content=f"[{dropped} earlier turns elided to stay within the context "
+                    f"window. Ask to re-read a file if you need it again.]")
+        return head + [marker] + recent
+
+    @staticmethod
+    def _call_signature(call: dict) -> str:
+        try:
+            return json.dumps({"n": call.get("name", ""),
+                               "a": call.get("arguments", {})}, sort_keys=True,
+                              default=str)
+        except Exception:
+            return str(call)
 
     def _recover_code_blocks_as_files(self, text: str, task: str):
         """Last-resort recovery: if the model emitted code in markdown fences
@@ -259,7 +311,8 @@ class Agent:
             final_text = resp.text
             calls = self._extract_calls(resp)
             if calls:
-                messages.append(Message(role="assistant", content=resp.text or ""))
+                messages.append(Message(role="assistant", content=resp.text or "",
+                                        tool_calls=calls))
                 for call in calls:
                     name = call.get("name", "")
                     args = call.get("arguments", {}) or {}
@@ -284,8 +337,10 @@ class Agent:
                 "messages": [m.to_dict() for m in messages],
             }
 
+        recent_signatures: List[str] = []
         while iterations < max_tool_iters:
             iterations += 1
+            messages = self._trim(messages)
             resp: ModelResponse = self.manager.complete(messages, tools=self._tool_schemas())
             final_text = resp.text
 
@@ -315,8 +370,26 @@ class Agent:
                 # No tool calls and nothing recoverable -> agent is done reasoning.
                 break
 
-            # Append the assistant message (with tool-call intent).
-            messages.append(Message(role="assistant", content=resp.text or ""))
+            # Stop an agent that is stuck repeating one failing call: without
+            # this it burns the whole iteration budget on the same mistake.
+            batch = "|".join(self._call_signature(c) for c in calls)
+            if batch and recent_signatures[-2:] == [batch, batch]:
+                if self.logger:
+                    self.logger.error(self.role,
+                                      "Repeated identical tool call; stopping this agent.")
+                messages.append(Message(
+                    role="user",
+                    content="You have repeated the same tool call with the same "
+                            "arguments. Stop and report what is blocking you."))
+                resp = self.manager.complete(self._trim(messages), tools=None)
+                final_text = resp.text
+                break
+            recent_signatures.append(batch)
+
+            # Append the assistant message, CARRYING the tool-call intent so the
+            # tool results that follow are not orphaned.
+            messages.append(Message(role="assistant", content=resp.text or "",
+                                    tool_calls=calls))
 
             for call in calls:
                 name = call.get("name", "")

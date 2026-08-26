@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -109,7 +110,6 @@ class MultiAgentOrchestrator:
         if models:
             self.models.update(models)
         # Workspace: prefer the user's chosen project folder; else a temp dir.
-        from ..tools.sandbox import Sandbox
         self._task_id = f"orch_{int(time.time())}_{uuid.uuid4().hex[:6]}"
         if workspace_root:
             ws = Path(workspace_root)

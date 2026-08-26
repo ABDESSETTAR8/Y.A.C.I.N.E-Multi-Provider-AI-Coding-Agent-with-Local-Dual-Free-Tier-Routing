@@ -32,6 +32,7 @@ from ..core.logger import get_logger
 from ..models.manager import ModelManager
 from ..models.types import Message
 from ..tools.registry import build_tool_registry, make_sandbox
+from ..tools.interpreter import python_executable
 from ..tools.sandbox import Sandbox
 from ..memory.store import MemoryStore
 from ..agents.agent import run_agent
@@ -53,6 +54,15 @@ class TaskResult:
     duration: float = 0.0
     artifacts: List[str] = field(default_factory=list)
     error: str = ""
+    # True when the loop produced files but could never execute a verification
+    # command. Distinct from failure: nothing was proven either way.
+    unverified: bool = False
+    files_produced: int = 0
+    # Where the work actually landed. When the task ran against an existing
+    # project, the engine works on a COPY in this directory and does not write
+    # back to the original — these fields are how the caller finds the result.
+    source_project: str = ""
+    changed_files: List[str] = field(default_factory=list)
     # Phase A enrichment
     quality: Dict[str, object] = field(default_factory=dict)
     review: str = ""
@@ -199,7 +209,17 @@ class AutonomousEngine:
 
         # Collect artifacts
         result.artifacts = self._list_artifacts(self.sandbox.workspace)
+        result.files_produced = self._produced_files()
         result.duration = time.time() - start
+        # The engine works on a COPY of an existing project and never writes
+        # back to it. Say so explicitly, and hand back the file list, so the
+        # result is findable instead of silently stranded in a temp workspace.
+        if project is not None:
+            result.source_project = str(project)
+            result.changed_files = result.artifacts
+            result.logs.append(
+                f"NOTE: work was done on a copy in {result.workspace} and was NOT "
+                f"written back to {project}. Review and apply the changes from there.")
 
         if success:
             result.verdict = ("Task verified complete: the implementation was built, "
@@ -208,6 +228,12 @@ class AutonomousEngine:
             self.memory.add(f"Completed task: {request[:100]}", category="task",
                             tags=["completed"])
             self._emit("agent", "loop", "✅ Task completed and verified.")
+        elif result.unverified:
+            result.verdict = (
+                f"UNVERIFIED: {result.files_produced} file(s) were produced, but no "
+                f"verification command could be determined, so nothing was executed. "
+                f"Review the workspace and re-run with an explicit verify_command.")
+            self._emit("agent", "loop", "⚠️ Task unverified — nothing was executed.")
         else:
             result.verdict = ("Task did not reach a verified-green state within the "
                               "self-heal budget. See logs.")
@@ -331,15 +357,19 @@ class AutonomousEngine:
             # Determine verify command if not given: try to auto-detect.
             vcmd = verify_command or self._infer_verify_command()
             if not vcmd:
-                # No test framework detected -> a simple "files exist" check.
-                ok = self._files_exist_check(request)
-                if ok:
-                    return True, heals
-                last_err = "No verification command available; produced files but could not verify execution."
-                # If first attempt and no tests, try to add a smoke test.
+                # No test framework detected. Try once to have the tester agent
+                # add a smoke test so there IS something to run; if that still
+                # leaves us with nothing executable, the task is UNVERIFIED —
+                # which is not the same as success. Reporting a green here
+                # (as a bare "did the agent write any file?" check once did)
+                # tells the user their task passed when nothing ever ran.
                 if attempt == 1:
                     self._add_smoke_test(request)
                     continue
+                result.unverified = True
+                last_err = ("No verification command could be determined, so the "
+                            "work was never executed. Files were produced but "
+                            "nothing was verified.")
                 return False, heals
 
             # Execute verification.
@@ -350,7 +380,12 @@ class AutonomousEngine:
             result.logs.append(f"[verify] {vcmd}\n{out[:600]}")
             self._emit("tool", "verify", f"exit={exec_res.data.get('returncode')} :: {out[:200]}")
 
-            if _parse_exit(out):
+            # Trust the exit code, not the shape of the output.
+            rc = exec_res.data.get("returncode")
+            timed_out = bool(exec_res.data.get("timed_out"))
+            verified_green = (rc == 0 and not timed_out) if rc is not None \
+                else _parse_exit(out)
+            if verified_green:
                 return True, heals
 
             last_err = out
@@ -398,21 +433,20 @@ class AutonomousEngine:
 
     def _infer_verify_command(self) -> Optional[str]:
         ws = self.sandbox.workspace
+        py = python_executable(ws)
         if (ws / "pytest.ini").exists() or (ws / "pyproject.toml").exists() or (ws / "tests").exists() or list(ws.glob("test_*.py")) or list(ws.glob("*_test.py")):
-            return "python -m pytest -q"
+            return f'"{py}" -m pytest -q'
         if (ws / "package.json").exists():
             return "npm test"
         # A python file with __main__ could be run directly.
         pys = list(ws.glob("*.py"))
         if pys and any("def main" in p.read_text(errors="ignore") for p in pys):
-            return f"python {pys[0].name}"
+            return f'"{py}" {pys[0].name}'
         return None
 
-    def _files_exist_check(self, request: str) -> bool:
-        # Crude: if the coder created files, treat as progress. We require a
-        # verify command for real completion; this is a fallback only.
-        files = [p for p in self.sandbox.workspace.rglob("*") if p.is_file()]
-        return len(files) > 0
+    def _produced_files(self) -> int:
+        """How many files the agents actually created. Progress, NOT success."""
+        return sum(1 for p in self.sandbox.workspace.rglob("*") if p.is_file())
 
     def _add_smoke_test(self, request: str) -> None:
         # Let the coder add a minimal smoke test so we can verify.
@@ -452,7 +486,8 @@ class AutonomousEngine:
         files = [str(p.relative_to(self.sandbox.workspace))
                  for p in self.sandbox.workspace.rglob("*")
                  if p.is_file() and ".bak" not in p.suffixes
-                 and "__pycache__" not in p.parts]
+                 and "__pycache__" not in p.parts
+                 and ".yacine_backups" not in p.parts]
         return "Changed files:\n" + "\n".join(files[:40])
 
     # -- research (B) ------------------------------------------------------
@@ -490,6 +525,8 @@ class AutonomousEngine:
     def _list_artifacts(self, ws: Path) -> List[str]:
         out = []
         for p in ws.rglob("*"):
-            if p.is_file() and ".bak" not in p.suffixes:
+            if p.is_file() and ".bak" not in p.suffixes \
+                    and ".yacine_backups" not in p.parts \
+                    and "__pycache__" not in p.parts:
                 out.append(str(p.relative_to(ws)))
         return sorted(out)[:50]

@@ -27,6 +27,24 @@ class TerminalTool(Tool):
     def __init__(self, sandbox: Sandbox) -> None:
         self.sandbox = sandbox
 
+    def _pin_interpreter(self, cmd: str) -> str:
+        """Rewrite a leading bare `python` to a real interpreter path.
+
+        Models emit `python -m pytest -q` because that is what the training
+        data says. On Linux and macOS `python` frequently does not exist, and
+        where it does it resolves through PATH to some other interpreter that
+        has none of the project's packages — so verification fails with "No
+        module named pytest" while the code under test is fine, and the
+        self-heal loop then spends its whole budget fixing nothing.
+        """
+        import re
+        from .interpreter import python_executable
+
+        py = python_executable(self.sandbox.workspace)
+        if py == "python":
+            return cmd
+        return re.sub(r'^\s*python(3(?:\.\d+)?)?(?=\s|$)', f'"{py}"', cmd, count=1)
+
     def run(self, command: str = "", cwd: str = "", timeout: int = 0,
             cmd: str = "", code: str = "", **kwargs) -> ToolResult:
         # Tolerate models that name the arg 'cmd' (or pass it positionally).
@@ -36,6 +54,7 @@ class TerminalTool(Tool):
                               data={"error": "missing command"})
         work = (self.sandbox.workspace / cwd) if cwd else None
         to = timeout or self.sandbox.timeout
+        cmd_text = self._pin_interpreter(cmd_text)
         res = self.sandbox.run(cmd_text, cwd=work, timeout=to)
         return ToolResult(
             ok=res.ok,
@@ -62,15 +81,35 @@ class PythonExecTool(Tool):
         self.sandbox = sandbox
 
     def run(self, code: str, argv: str = "") -> ToolResult:
-        # If code looks like a path, run the file; else run inline.
-        maybe = self.sandbox.workspace / code
-        if maybe.exists() and code.endswith(".py"):
-            cmd = f'"{self.sandbox.workspace}/venv/Scripts/python.exe" {code} {argv}'.replace("/", "\\") \
-                if (self.sandbox.workspace / "venv").exists() else f'python {code} {argv}'
+        import shlex
+        from .interpreter import python_executable
+        from ..core.security import SecurityError
+
+        py = python_executable(self.sandbox.workspace)
+        try:
+            extra = shlex.split(argv) if argv else []
+        except ValueError as e:
+            return ToolResult(ok=False, output=f"Could not parse argv: {e}")
+
+        # If `code` names an existing .py file in the workspace, run it;
+        # otherwise treat it as a snippet and run it from a scratch file.
+        try:
+            maybe = self.sandbox.resolve(code) if code.endswith(".py") else None
+        except SecurityError as e:
+            return ToolResult(ok=False, output=f"Refused: {e}")
+
+        if maybe is not None and maybe.exists():
+            target = str(maybe)
         else:
-            script = self.sandbox.workspace / "_yacine_run.py"
-            script.write_text(code, encoding="utf-8")
-            cmd = f'python _yacine_run.py {argv}'
-        res = self.sandbox.run(cmd)
+            try:
+                target = str(self.sandbox.write_file("_yacine_run.py", code))
+            except SecurityError as e:
+                return ToolResult(ok=False, output=f"Refused: {e}")
+
+        # An argv list, executed without a shell — `code` and `argv` both come
+        # from the model and must never be interpolated into a command string.
+        res = self.sandbox.run([py, target] + extra, shell=False)
         return ToolResult(ok=res.ok, output=str(res),
-                          data={"returncode": res.returncode})
+                          data={"returncode": res.returncode,
+                                "timed_out": res.timed_out,
+                                "interpreter": py})

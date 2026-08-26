@@ -19,7 +19,10 @@ import yacine.api.server as srv
 
 srv._settings.workspace_dir = ROOT / "tests" / "tmp_ui_ws"
 srv._settings.workspace_dir.mkdir(parents=True, exist_ok=True)
-client = TestClient(app)
+# The API authenticates every non-public route and only serves allowed Hosts,
+# so the test client must present the key and a permitted Host.
+client = TestClient(app, base_url="http://127.0.0.1:8765",
+                    headers={"X-API-Key": srv.API_KEY})
 
 
 def test_ui_index_served():

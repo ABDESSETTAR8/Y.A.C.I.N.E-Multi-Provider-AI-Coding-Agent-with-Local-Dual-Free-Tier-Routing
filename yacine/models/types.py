@@ -11,6 +11,12 @@ class Message:
     content: str
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
+    # Tool calls an ASSISTANT turn requested, as
+    # [{"id": ..., "name": ..., "arguments": {...}}]. Without this the
+    # transcript contains tool results with nothing that asked for them, which
+    # OpenAI-compatible backends reject outright and which costs local models
+    # the record of what they requested.
+    tool_calls: List[Dict[str, object]] = field(default_factory=list)
     metadata: Dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, object]:
@@ -19,6 +25,8 @@ class Message:
             d["name"] = self.name
         if self.tool_call_id:
             d["tool_call_id"] = self.tool_call_id
+        if self.tool_calls:
+            d["tool_calls"] = self.tool_calls
         return d
 
 

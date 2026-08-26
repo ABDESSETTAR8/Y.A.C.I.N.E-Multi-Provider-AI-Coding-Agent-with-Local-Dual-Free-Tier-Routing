@@ -59,6 +59,11 @@ class ModelConfig(BaseModel):
     temperature: float = 0.2
     max_tokens: int = 4096
     timeout: int = 300
+    # Context window handed to the provider. Ollama otherwise applies its own
+    # default (4096, or 2048 on older builds) and silently truncates anything
+    # longer, which is the usual cause of a model "ignoring" its instructions.
+    # Raise it to the model's real window; lower it if VRAM is tight.
+    num_ctx: int = 8192
     # How long Ollama keeps the model resident in VRAM after a response. On an
     # 8 GB GPU use a short window (e.g. "1m") or force immediate eviction by
     # passing keep_alive=0 to manager.complete(). The Orchestrator drives this
@@ -80,6 +85,7 @@ class ChatModelConfig(ModelConfig):
     keep_alive: Optional[str] = "15m"   # stay resident for quick follow-ups
     max_tokens: int = 1024              # short, focused chat replies
     temperature: float = 0.3
+    num_ctx: int = 4096                 # chat turns are short; save VRAM
 
 
 # --------------------------------------------------------------------------

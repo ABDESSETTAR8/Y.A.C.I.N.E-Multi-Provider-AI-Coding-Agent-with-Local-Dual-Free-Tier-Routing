@@ -16,12 +16,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import secrets
 import time
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..core.config import get_settings, ModelConfig, Permissions
@@ -33,34 +37,92 @@ from ..memory.store import MemoryStore
 from ..agents.personas import PERSONAS
 from ..ui.backend import router as ui_router, monitor_endpoint
 
-app = FastAPI(title="Y.A.C.I.N.E API", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
-)
-app.include_router(ui_router)
-
-
-@app.get("/api/monitor")
-def monitor():
-    return monitor_endpoint()
-
 _settings = get_settings()
 _logger = get_logger("api")
 _bus: EventBus = get_bus()
 _memory = MemoryStore(logger=_logger)
 _manager = ModelManager(logger=_logger)
 
-API_KEY = _settings.model.api_key or ""  # reuse; or set YACINE_API_KEY env
+# --------------------------------------------------------------------------
+# Auth.
+#
+# This server drives a shell on the user's machine, so it is NOT safe to leave
+# open. The key comes from YACINE_API_KEY; when that is unset we generate one
+# per process and print it, rather than silently running with no auth. The
+# provider's model API key is never reused for this — they are different
+# secrets with different audiences.
+# --------------------------------------------------------------------------
+API_KEY = os.environ.get("YACINE_API_KEY", "").strip()
+_EPHEMERAL_KEY = False
+if not API_KEY:
+    API_KEY = secrets.token_urlsafe(32)
+    _EPHEMERAL_KEY = True
+
+# Browsers must not be able to reach this server from arbitrary pages: a
+# wildcard origin turns every site the user visits into a remote shell.
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.environ.get(
+        "YACINE_ALLOWED_ORIGINS",
+        "http://127.0.0.1:8765,http://localhost:8765",
+    ).split(",") if o.strip()
+]
+# Only these Host values are served, which blocks DNS-rebinding attacks that
+# resolve an attacker-controlled name to 127.0.0.1.
+ALLOWED_HOSTS = [
+    h.strip() for h in os.environ.get(
+        "YACINE_ALLOWED_HOSTS", "127.0.0.1,localhost,[::1]",
+    ).split(",") if h.strip()
+]
+
+app = FastAPI(title="Y.A.C.I.N.E API", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS, allow_credentials=True,
+    allow_methods=["GET", "POST"], allow_headers=["X-API-Key", "Content-Type"],
+)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+app.include_router(ui_router)
+
+# Paths served without a key: the UI shell itself and its static assets, which
+# carry no data. Everything else authenticates.
+_PUBLIC_PATHS = ("/ui", "/docs", "/redoc", "/openapi.json", "/favicon.ico")
+
+
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    """Authenticate every route by default.
+
+    Previously each handler opted in by calling _check_auth(), and several
+    (/health, /models, /context/summary, /memory) never did. Default-deny
+    removes that whole class of oversight.
+    """
+    path = request.url.path
+    if request.method == "OPTIONS" or path.startswith(_PUBLIC_PATHS):
+        return await call_next(request)
+    key = request.headers.get("X-API-Key", "")
+    if not secrets.compare_digest(key, API_KEY):
+        return JSONResponse({"detail": "Invalid or missing API key"}, status_code=401)
+    return await call_next(request)
+
+
+@app.get("/api/monitor")
+def monitor():
+    return monitor_endpoint()
 
 
 def _check_auth(req: Request) -> None:
-    if not API_KEY:
-        return
-    key = req.headers.get("X-API-Key", "")
-    if key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    """Kept for compatibility; the middleware above is the real gate."""
+    return None
+
+
+def _check_ws_auth(ws: WebSocket) -> bool:
+    """WebSockets bypass HTTP middleware, so they are checked explicitly.
+
+    The key may arrive as a header or, because browser WebSocket clients
+    cannot set headers, as an `?api_key=` query parameter.
+    """
+    key = ws.headers.get("X-API-Key", "") or ws.query_params.get("api_key", "")
+    return secrets.compare_digest(key, API_KEY)
 
 
 # --------------------------------------------------------------------------
@@ -497,6 +559,9 @@ def add_memory(req: dict, request: Request):
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
+    if not _check_ws_auth(ws):
+        await ws.close(code=1008, reason="Invalid or missing API key")
+        return
     await ws.accept()
     # Subscribe a callback that forwards engine events to this socket.
     async def forward(e):
@@ -548,7 +613,6 @@ def _result_to_dict(r: TaskResult) -> dict:
 async def upload_files(request: Request):
     """Accept multipart uploads (files or a folder) and save them into the
     configured workspace/uploads dir. Returns the list of saved paths."""
-    import os
     from pathlib import PurePosixPath
 
     upload_dir = _settings.workspace_dir / "uploads"
@@ -572,4 +636,10 @@ async def upload_files(request: Request):
 
 def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
     import uvicorn
+    if _EPHEMERAL_KEY:
+        print(f"\n  Y.A.C.I.N.E API key (this run only): {API_KEY}")
+        print("  Send it as the X-API-Key header, or set YACINE_API_KEY to fix it.\n")
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"  WARNING: binding to {host} exposes an agent that runs shell "
+              f"commands to your network.\n")
     uvicorn.run(app, host=host, port=port, log_level="info")

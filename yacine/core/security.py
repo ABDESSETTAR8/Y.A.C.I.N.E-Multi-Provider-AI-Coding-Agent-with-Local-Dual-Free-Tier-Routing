@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .config import get_settings
 
@@ -68,13 +68,55 @@ class SecurityEnforcer:
                 )
 
     # -- filesystem safety ------------------------------------------------
-    def check_path(self, path: Path, for_write: bool = False) -> None:
+    @staticmethod
+    def resolve_in(root: Path, rel: str | Path) -> Path:
+        """Resolve ``rel`` strictly inside ``root``.
+
+        This is THE containment boundary for every file tool. ``root / rel``
+        alone is not a boundary: pathlib DISCARDS ``root`` when ``rel`` is
+        absolute (``workspace / "/etc/passwd"`` -> ``/etc/passwd``), and plain
+        ``..`` segments walk straight out. Both are rejected here, as are
+        symlinks that point outside the root and Windows drive/UNC prefixes.
+        """
+        root = Path(root).resolve()
+        rel_p = Path(rel)
+        if rel_p.is_absolute() or rel_p.drive or rel_p.root:
+            raise SecurityError(
+                f"Absolute paths are not allowed; give a path relative to the "
+                f"workspace (got {str(rel)!r})."
+            )
+        candidate = (root / rel_p).resolve()
+        if candidate != root and root not in candidate.parents:
+            raise SecurityError(
+                f"Path escapes the workspace: {str(rel)!r} resolves outside "
+                f"{root}. Refusing."
+            )
+        return candidate
+
+    def check_path(self, path: Path, for_write: bool = False,
+                   root: Optional[Path] = None) -> Path:
+        """Gate a filesystem access. Returns the resolved, confined path.
+
+        When ``root`` is given the path is confined to it (the caller should
+        pass the sandbox workspace). ``path`` may be relative to that root or
+        an already-joined path; either way the result is verified to sit
+        inside the root before any permission check succeeds.
+        """
         path = Path(path)
+        if root is not None:
+            root_r = Path(root).resolve()
+            try:
+                rel = path.relative_to(root_r) if path.is_absolute() else path
+            except ValueError:
+                # An absolute path outside the root: let resolve_in reject it
+                # with the clearer message.
+                rel = path
+            path = self.resolve_in(root_r, rel)
+        else:
+            path = path.resolve()
+
         if for_write:
             self.require("write_file", str(path))
-            if ".." in path.parts:
-                # Allowed in general, but guard obvious escapes from workspace.
-                pass
         else:
             self.require("read_file", str(path))
 
@@ -83,9 +125,22 @@ class SecurityEnforcer:
             # Unknown extension -> require explicit user permission to be safe.
             if not self.can("write_file"):
                 raise SecurityError(f"Write of {ext} files is not permitted.")
+        return path
 
-    def check_delete(self, path: Path) -> None:
+    def check_delete(self, path: Path, root: Optional[Path] = None) -> Path:
+        """Gate a delete. Returns the resolved, confined path."""
+        path = Path(path)
+        if root is not None:
+            root_r = Path(root).resolve()
+            try:
+                rel = path.relative_to(root_r) if path.is_absolute() else path
+            except ValueError:
+                rel = path
+            path = self.resolve_in(root_r, rel)
+        else:
+            path = path.resolve()
         self.require("delete_file", str(path))
+        return path
 
     def check_internet(self, url: str = "") -> None:
         self.require("internet_access", url)

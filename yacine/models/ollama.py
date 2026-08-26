@@ -18,9 +18,14 @@ def _to_ollama_messages(messages: List[Message]) -> List[dict]:
     out = []
     for m in messages:
         entry: dict = {"role": m.role, "content": m.content}
-        if m.role == "tool" and m.tool_call_id:
-            entry["role"] = "tool"
-            entry["content"] = m.content
+        if m.role == "assistant" and m.tool_calls:
+            entry["tool_calls"] = [
+                {"function": {"name": tc.get("name", ""),
+                              "arguments": tc.get("arguments", {})}}
+                for tc in m.tool_calls
+            ]
+        if m.role == "tool" and m.name:
+            entry["name"] = m.name
         out.append(entry)
     return out
 
@@ -76,16 +81,33 @@ class OllamaProvider(ModelProvider):
             return self.keep_alive
         return None  # let the server decide
 
+    def _options(self, kwargs: dict) -> dict:
+        """Sampling options, including the context window.
+
+        num_ctx matters more than it looks: without it Ollama falls back to its
+        own default window (4096 on current builds, 2048 on older ones) and
+        SILENTLY discards whatever overflows from the front of the
+        conversation. A coder agent sends a context block, a plan and
+        accumulated tool output, so the part that gets dropped is usually the
+        system prompt and the instructions — which reads to the user as a model
+        that ignores what it was told.
+        """
+        opts = {
+            "temperature": kwargs.get("temperature", self.cfg.temperature),
+            "num_predict": kwargs.get("max_tokens", self.cfg.max_tokens),
+        }
+        num_ctx = kwargs.get("num_ctx", getattr(self.cfg, "num_ctx", None))
+        if num_ctx:
+            opts["num_ctx"] = int(num_ctx)
+        return opts
+
     def complete(self, messages: List[Message], tools=None, **kwargs) -> ModelResponse:
         keep_alive = self._keep_alive(kwargs)
         payload: dict = {
             "model": self.cfg.model,
             "messages": _to_ollama_messages(messages),
             "stream": False,
-            "options": {
-                "temperature": kwargs.get("temperature", self.cfg.temperature),
-                "num_predict": kwargs.get("max_tokens", self.cfg.max_tokens),
-            },
+            "options": self._options(kwargs),
         }
         if keep_alive is not None:
             payload["keep_alive"] = keep_alive
@@ -109,6 +131,14 @@ class OllamaProvider(ModelProvider):
                 "arguments": fn.get("arguments", {}),
             })
         usage = data.get("prompt_eval_count", 0)
+        # Make truncation visible instead of silent.
+        window = int(getattr(self.cfg, "num_ctx", 0) or 0)
+        if window and usage and usage >= window * 0.9 and self.logger:
+            self.logger.error(
+                "ollama",
+                f"Prompt used {usage} of {window} context tokens — Ollama drops "
+                f"the overflow from the front of the conversation. Raise num_ctx "
+                f"or shorten the context.")
         return ModelResponse(
             text=text,
             tool_calls=tool_calls,
@@ -123,10 +153,7 @@ class OllamaProvider(ModelProvider):
             "model": self.cfg.model,
             "messages": _to_ollama_messages(messages),
             "stream": True,
-            "options": {
-                "temperature": kwargs.get("temperature", self.cfg.temperature),
-                "num_predict": kwargs.get("max_tokens", self.cfg.max_tokens),
-            },
+            "options": self._options(kwargs),
         }
         if keep_alive is not None:
             payload["keep_alive"] = keep_alive
