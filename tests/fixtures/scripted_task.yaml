@@ -1,0 +1,77 @@
+# Scripted autonomous task: build a tiny math module, test it, SELF-HEAL,
+# then run Review + Security + Docs + DevOps (commit) agents — proving the
+# whole Phase A pipeline executes without a live model.
+#
+# Turns are consumed in order by the global ScriptedProvider index. Turns with
+# `match` only fire when the regex matches the latest observation/tool result.
+#
+# 0 Planner (PM)
+# 1 Coder: writes calc.py (buggy) + test_calc.py, runs pytest (FAILS)
+# 2 Debugger (match FAILED): fixes the bug, re-runs pytest (exit=0)
+# 3 Reviewer: reviews diff
+# 4 Security: scans for vulnerabilities
+# 5 Docs: writes documentation
+# 6 DevOps: generates commit message
+
+- text: |
+    PLAN
+    Requirements: a small math module with add() and mul().
+    Architecture: single module calc.py + test_calc.py.
+    Dependencies: pytest.
+    Steps: implement calc.py, write tests, run pytest, fix failures, review, document, commit.
+    Testing: pytest with unit tests for add/mul.
+    Rollback: git commit after green.
+
+- text: |
+    I will create the module and a test file.
+  tool_calls:
+    - name: write_file
+      arguments:
+        path: calc.py
+        content: |
+          def add(a, b):
+              return a - b   # BUG: should be a + b
+
+          def mul(a, b):
+              return a * b
+    - name: write_file
+      arguments:
+        path: test_calc.py
+        content: |
+          from calc import add, mul
+
+          def test_add():
+              assert add(2, 3) == 5
+
+          def test_mul():
+              assert mul(2, 3) == 6
+    - name: terminal
+      arguments:
+        command: "python -m pytest -q"
+
+# Debugger: only when tests failed (engine feeds observation "FAILED"/exit=-1)
+- match: "FAILED|AssertionError|exit=-?1|def test_add"
+  text: |
+    The test failed. `add` returns a - b instead of a + b. Fixing the line.
+  tool_calls:
+    - name: edit_file
+      arguments:
+        path: calc.py
+        old_string: "    return a - b   # BUG: should be a + b"
+        new_string: "    return a + b"
+    - name: terminal
+      arguments:
+        command: "python -m pytest -q"
+
+# Post-success agents (no match needed; reached only after green)
+- text: |
+    REVIEW: code is small and clear; one blocker fixed (add bug). No outstanding findings.
+
+- text: |
+    SECURITY: no hardcoded secrets, no eval/exec, no shell=True. No vulnerabilities found.
+
+- text: |
+    DOCS: README.md created describing calc.add and calc.mul with usage examples.
+
+- text: |
+    feat(calc): add add() and mul() with unit tests

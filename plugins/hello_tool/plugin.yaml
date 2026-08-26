@@ -1,0 +1,4 @@
+name: hello_tool
+version: "1.0.0"
+description: Minimal plugin that registers a single greeting tool.
+entrypoint: hello.py

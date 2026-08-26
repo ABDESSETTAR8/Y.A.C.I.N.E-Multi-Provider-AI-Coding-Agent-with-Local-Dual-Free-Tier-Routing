@@ -1,0 +1,68 @@
+# Scripted fixture for the 4-stage MultiAgentOrchestrator (offline, no GPU).
+#
+# The scripted provider consumes turns STRICTLY IN ORDER (match: null = always
+# applies), testing each `match` against the latest tool/verify output. The
+# orchestrator calls each stage once in fixed order and the Executioner loops
+# once per micro-task in order, so sequential consumption maps perfectly:
+#   0: Architect   -> plan text
+#   1: Orchestrator-> strict JSON micro-task array
+#   2: Executioner T1 -> writes greeter.py
+#   3: Executioner T2 -> writes test_greeter.py
+#   4: Executioner T3 -> runs pytest (verification)
+#   5: Frontend    -> human summary
+
+- text: |
+    GOAL: a tiny CLI "greeter" that prints "Hello, <name>!".
+    MODULES: greeter.py (logic), test_greeter.py (pytest).
+    DATA FLOW: main() reads sys.argv[1], prints greeting.
+    DEPS: none (stdlib only).
+    VERIFY: pytest -q.
+  tool_calls: []
+
+- text: '[{"id":"T1","action":"create","description":"Create greeter.py with a greet(name) function and a __main__ that prints greet(sys.argv[1])","target_files":["greeter.py"],"depends_on":[]},{"id":"T2","action":"create","description":"Create test_greeter.py asserting greet returns the correct string","target_files":["test_greeter.py"],"depends_on":["T1"]},{"id":"T3","action":"run","description":"Run pytest -q to verify both modules pass","target_files":["test_greeter.py"],"depends_on":["T1","T2"]}]'
+  tool_calls: []
+
+- text: "writing greeter.py"
+  tool_calls:
+    - name: write_file
+      arguments:
+        path: greeter.py
+        content: |
+          import sys
+
+          def greet(name: str) -> str:
+              return f"Hello, {name}!"
+
+          if __name__ == "__main__":
+              print(greet(sys.argv[1] if len(sys.argv) > 1 else "world"))
+    - name: terminal
+      arguments:
+        command: "python greeter.py Yacine"
+
+- text: "writing test_greeter.py"
+  tool_calls:
+    - name: write_file
+      arguments:
+        path: test_greeter.py
+        content: |
+          from greeter import greet
+
+          def test_greet():
+              assert greet("Yacine") == "Hello, Yacine!"
+              assert greet("world") == "Hello, world!"
+    - name: terminal
+      arguments:
+        command: "python -m pytest -q"
+
+- text: "verifying"
+  tool_calls:
+    - name: terminal
+      arguments:
+        command: "python -m pytest -q"
+
+- text: |
+    Built a tiny greeter CLI.
+    Files: greeter.py (greet() + __main__), test_greeter.py (2 assertions).
+    Verification: passed (pytest green).
+    Next: try `python greeter.py YourName`.
+  tool_calls: []

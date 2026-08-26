@@ -1,0 +1,539 @@
+<title>Y.A.C.I.N.E Defect Ledger</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+<style>
+  :root{
+    --ground:#F2F5F5;
+    --panel:#FFFFFF;
+    --ink:#131A1C;
+    --ink-soft:#495558;
+    --ink-faint:#7B878A;
+    --rule:#D6DEDE;
+    --rule-soft:#E5EAEA;
+    --accent:#0E6E6B;
+    --accent-soft:#DCEBEA;
+    --crit:#A32316;
+    --crit-soft:#F6E0DD;
+    --high:#9A5C00;
+    --high-soft:#F7E9D3;
+    --med:#4A5A67;
+    --med-soft:#E2E8EC;
+    --code-bg:#EAEFEF;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#0D1214;
+      --panel:#141B1D;
+      --ink:#E6EDED;
+      --ink-soft:#A3B0B2;
+      --ink-faint:#71807F;
+      --rule:#263134;
+      --rule-soft:#1D2628;
+      --accent:#4FCFC6;
+      --accent-soft:#12312F;
+      --crit:#F08476;
+      --crit-soft:#3A1C18;
+      --high:#E0A44B;
+      --high-soft:#33240F;
+      --med:#9FB2BF;
+      --med-soft:#1E272C;
+      --code-bg:#1A2225;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0D1214;
+    --panel:#141B1D;
+    --ink:#E6EDED;
+    --ink-soft:#A3B0B2;
+    --ink-faint:#71807F;
+    --rule:#263134;
+    --rule-soft:#1D2628;
+    --accent:#4FCFC6;
+    --accent-soft:#12312F;
+    --crit:#F08476;
+    --crit-soft:#3A1C18;
+    --high:#E0A44B;
+    --high-soft:#33240F;
+    --med:#9FB2BF;
+    --med-soft:#1E272C;
+    --code-bg:#1A2225;
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    background:var(--ground);
+    color:var(--ink);
+    font-family:"Source Serif 4","Iowan Old Style",Georgia,serif;
+    font-size:17px;
+    line-height:1.62;
+    margin:0;
+    padding:0 20px 96px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1000px;margin:0 auto;}
+
+  code,.mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;}
+  code{background:var(--code-bg);padding:.1em .36em;border-radius:2px;font-size:.84em;}
+  pre{
+    background:var(--code-bg);border:1px solid var(--rule-soft);
+    padding:12px 14px;overflow-x:auto;font-family:"IBM Plex Mono",monospace;
+    font-size:13px;line-height:1.55;margin:14px 0;border-radius:3px;
+  }
+
+  h1,h2,h3,.label{font-family:"IBM Plex Sans Condensed","Helvetica Neue",Arial,sans-serif;}
+  .label{
+    font-size:11.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--ink-faint);
+  }
+
+  /* ---- masthead ---- */
+  header{padding:64px 0 28px;border-bottom:2px solid var(--ink);}
+  h1{
+    font-size:clamp(38px,7vw,64px);font-weight:700;line-height:1.02;
+    letter-spacing:-.02em;margin:10px 0 0;text-wrap:balance;
+  }
+  header .sub{
+    font-size:18px;color:var(--ink-soft);max-width:62ch;margin:16px 0 0;
+  }
+  .meta{
+    display:flex;flex-wrap:wrap;gap:8px 26px;margin-top:22px;
+    font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--ink-faint);
+  }
+
+  /* ---- tally ---- */
+  .tally{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));
+    gap:1px;background:var(--rule);border:1px solid var(--rule);
+    margin:0 0 46px;
+  }
+  .tally div{background:var(--panel);padding:16px 18px 14px;}
+  .tally .n{
+    font-family:"IBM Plex Sans Condensed",sans-serif;font-size:34px;font-weight:700;
+    line-height:1;font-variant-numeric:tabular-nums;display:block;
+  }
+  .tally .k{font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;
+    font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:600;
+    color:var(--ink-faint);margin-top:8px;display:block;}
+  .n.crit{color:var(--crit);} .n.high{color:var(--high);} .n.med{color:var(--med);}
+
+  section.band{margin:0 0 54px;}
+  h2{
+    font-size:13px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--ink);margin:0 0 4px;
+  }
+  .band-note{color:var(--ink-soft);font-size:15.5px;margin:0 0 26px;max-width:64ch;}
+  .band-head{border-top:1px solid var(--ink);padding-top:12px;margin-bottom:22px;}
+
+  /* ---- findings ---- */
+  article{
+    display:grid;grid-template-columns:180px minmax(0,1fr);gap:0 34px;
+    padding:26px 0;border-top:1px solid var(--rule-soft);
+  }
+  article:first-of-type{border-top:1px solid var(--rule);}
+  .gutter{display:flex;flex-direction:column;gap:9px;align-items:flex-start;}
+  .id{
+    font-family:"IBM Plex Mono",monospace;font-size:12px;font-weight:500;
+    color:var(--ink-faint);letter-spacing:.04em;
+  }
+  .chip{
+    font-family:"IBM Plex Sans Condensed",sans-serif;font-size:11px;font-weight:700;
+    letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:2px;
+  }
+  .chip.crit{background:var(--crit-soft);color:var(--crit);}
+  .chip.high{background:var(--high-soft);color:var(--high);}
+  .chip.med{background:var(--med-soft);color:var(--med);}
+  .loc{
+    font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-soft);
+    line-height:1.5;word-break:break-word;
+  }
+  .verified{
+    font-family:"IBM Plex Sans Condensed",sans-serif;font-size:10.5px;font-weight:600;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--accent);
+    border:1px solid var(--accent);padding:2px 6px;border-radius:2px;
+  }
+  h3{font-size:21px;font-weight:600;line-height:1.25;margin:0 0 10px;letter-spacing:-.005em;text-wrap:balance;}
+  article p{margin:0 0 12px;max-width:68ch;}
+  article p:last-child{margin-bottom:0;}
+  .fix{
+    border-left:2px solid var(--accent);padding:2px 0 2px 14px;margin-top:14px;
+    color:var(--ink-soft);font-size:15.5px;max-width:66ch;
+  }
+  .fix strong{color:var(--ink);font-weight:600;}
+
+  @media (max-width:720px){
+    article{grid-template-columns:1fr;gap:14px;}
+    .gutter{flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px 12px;}
+  }
+
+  footer{
+    border-top:2px solid var(--ink);padding-top:20px;margin-top:10px;
+    color:var(--ink-faint);font-size:14px;
+  }
+  footer p{max-width:66ch;}
+  a{color:var(--accent);}
+</style>
+
+<div class="wrap">
+
+<header>
+  <span class="label">Static &amp; dynamic audit — Y.A.C.I.N.E coder agent</span>
+  <h1>Defect Ledger</h1>
+  <p class="sub">Twenty-three defects across the security layer, the autonomous loop, and the local model transport. The three at the top let arbitrary code reach the host; the next group is why runs quietly go wrong.</p>
+  <div class="meta">
+    <span>26 Aug 2026</span>
+    <span>~7,000 LOC Python</span>
+    <span>pyflakes + pytest + targeted exploit probes</span>
+    <span>3 of 25 tests failing</span>
+  </div>
+</header>
+
+<div class="tally">
+  <div><span class="n crit">3</span><span class="k">Critical</span></div>
+  <div><span class="n high">9</span><span class="k">High</span></div>
+  <div><span class="n med">11</span><span class="k">Medium</span></div>
+  <div><span class="n">7</span><span class="k">Reproduced live</span></div>
+  <div><span class="n">2</span><span class="k">Guaranteed crashes</span></div>
+</div>
+
+<section class="band">
+  <div class="band-head">
+    <h2>Critical — the containment story does not hold</h2>
+    <p class="band-note">The README and the module docstrings describe a permission-gated, workspace-confined agent. Three defects mean none of that confinement actually exists at runtime.</p>
+  </div>
+
+  <article>
+    <div class="gutter">
+      <span class="id">C-01</span>
+      <span class="chip crit">Critical</span>
+      <span class="verified">Reproduced</span>
+      <span class="loc">core/security.py:73–86<br>tools/sandbox.py:118<br>tools/filesystem.py (all)</span>
+    </div>
+    <div>
+      <h3>Every file tool writes anywhere on the disk</h3>
+      <p>Each tool builds its target as <code>self.sandbox.workspace / path</code>. In <code>pathlib</code>, joining an absolute path <em>discards</em> the left side — so <code>write_file("/etc/cron.d/x", …)</code> resolves to <code>/etc/cron.d/x</code>, not to a file inside the workspace. Relative <code>../../</code> escapes work too. <code>SecurityEnforcer.check_path()</code> is the only gate and it never compares the resolved path against the workspace root; its traversal branch is literally a comment followed by <code>pass</code>.</p>
+      <p>I confirmed both escapes against a live sandbox — an absolute write and a <code>../../</code> write both returned <code>[OK]</code> and landed outside the workspace, and <code>read_file("/etc/hostname")</code> returned host contents.</p>
+      <div class="fix"><strong>Fix:</strong> one choke point. Resolve with <code>(workspace / path).resolve()</code>, reject unless <code>workspace.resolve()</code> is among its <code>parents</code>, reject absolute inputs and symlinks outright, and route <em>every</em> tool through it — <code>list_dir</code> and <code>search_code</code> currently perform no check at all.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">C-02</span>
+      <span class="chip crit">Critical</span>
+      <span class="loc">api/server.py:36–62<br>api/server.py:426–462</span>
+    </div>
+    <div>
+      <h3>The local API is unauthenticated and open to every website</h3>
+      <p>CORS is <code>allow_origins=["*"]</code> with <code>allow_credentials=True</code>, and <code>API_KEY</code> is sourced from <code>_settings.model.api_key</code> — the <em>LLM provider's</em> key. The documented <code>YACINE_API_KEY</code> environment variable is never read anywhere in the codebase, so in the default local-Ollama setup the key is empty and <code>_check_auth()</code> returns immediately on every request.</p>
+      <p>That leaves <code>/run</code>, <code>/orchestrate</code>, <code>/api/upload</code> and <code>/api/browse</code> reachable from any page the user has open in a browser while the server runs. <code>/api/browse</code> enumerates any directory on the machine; <code>/run</code> starts an agent that executes shell commands. Separately, <code>/health</code>, <code>/models</code>, <code>/context/summary</code>, <code>/memory</code> and the <code>/ws</code> event stream call no auth check at all — the WebSocket broadcasts every reasoning step, tool call and file path to whoever connects.</p>
+      <div class="fix"><strong>Fix:</strong> read <code>YACINE_API_KEY</code>, generate a random token on first boot if unset, and require it on <em>all</em> routes including the WebSocket. Pin CORS to the UI's own origin, and validate the <code>Host</code> header to block DNS rebinding. Use <code>secrets.compare_digest</code> for the comparison.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">C-03</span>
+      <span class="chip crit">Critical</span>
+      <span class="loc">tools/git.py:33–58</span>
+    </div>
+    <div>
+      <h3>Shell injection through git tool arguments</h3>
+      <p>Model-supplied <code>args</code> is interpolated straight into a command string that <code>Sandbox.run()</code> executes with <code>shell=True</code>: <code>cmd = f'git commit -m "{msg}"'</code>. A commit message containing a double quote closes the string and everything after it runs as shell. The same pattern applies to <code>add</code>, <code>branch</code>, <code>checkout</code>, <code>tag</code> and <code>push</code>.</p>
+      <p>This matters more than usual here because the argument originates from an LLM that reads untrusted input — repository files, and web pages fetched by the research agent. A prompt-injection payload in a README becomes host command execution. <code>DANGEROUS_PATTERNS</code> catches none of it.</p>
+      <div class="fix"><strong>Fix:</strong> drop the string entirely. Build an argv list per operation and call <code>subprocess.run(list, shell=False)</code>. Give <code>Sandbox.run()</code> a list-accepting path and use it for every tool that composes a command from model output.</p></div>
+    </div>
+  </article>
+</section>
+
+<section class="band">
+  <div class="band-head">
+    <h2>High — crashes, false greens, and a starved model</h2>
+    <p class="band-note">Two of these are unconditional <code>NameError</code>s. The rest are the reasons a local coder agent appears to work and then doesn't: it declares victory without running anything, and it feeds the model more context than the model is configured to accept.</p>
+  </div>
+
+  <article>
+    <div class="gutter">
+      <span class="id">H-01</span>
+      <span class="chip high">High</span>
+      <span class="verified">Reproduced</span>
+      <span class="loc">api/server.py:569</span>
+    </div>
+    <div>
+      <h3><code>JSONResponse</code> is undefined in the upload handler</h3>
+      <p>The <code>except</code> branch of <code>/api/upload</code> returns <code>JSONResponse(...)</code>, but the name is never imported in <code>server.py</code>. Any upload failure — a permission error, a bad multipart body — turns a clean 400 into an unhandled <code>NameError</code> and a 500 with a stack trace. The GUI's Upload button has no working error path.</p>
+      <div class="fix"><strong>Fix:</strong> <code>from fastapi.responses import JSONResponse</code> at module level.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">H-02</span>
+      <span class="chip high">High</span>
+      <span class="verified">Reproduced</span>
+      <span class="loc">orchestrator/multi_agent.py:117</span>
+    </div>
+    <div>
+      <h3><code>tempfile</code> is undefined on the orchestrator's default path</h3>
+      <p>When <code>workspace_root</code> is not supplied, the constructor falls back to <code>Path(tempfile.gettempdir()) / self._task_id</code> — and <code>tempfile</code> is not imported in the module. Constructing a <code>MultiAgentOrchestrator</code> without an explicit workspace raises <code>NameError</code> before any work begins. Every UI path that omits a project folder hits this.</p>
+      <div class="fix"><strong>Fix:</strong> add the import. The same file also imports <code>Sandbox</code> at module level and re-imports it inside <code>__init__</code>; keep one.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">H-03</span>
+      <span class="chip high">High</span>
+      <span class="loc">core/engine.py:333–343<br>core/engine.py:411–415</span>
+    </div>
+    <div>
+      <h3>The loop reports "verified complete" without running anything</h3>
+      <p>When <code>_infer_verify_command()</code> detects no test framework, the engine falls back to <code>_files_exist_check(request)</code> — which ignores its <code>request</code> argument entirely and returns <code>True</code> if the workspace contains <em>any</em> file at all. The coder agent writes one file, the check passes, and <code>run()</code> sets <code>success=True</code> with the verdict <em>"Task verified complete: the implementation was built, executed, verified, reviewed, quality-checked, documented, and committed."</em></p>
+      <p>Nothing was executed and nothing was verified. This is the single most damaging defect in the product's core claim, because it is silent: the user is told the task passed. The method's own comment concedes it is "crude" and "a fallback only", but the return value is treated as a real green.</p>
+      <div class="fix"><strong>Fix:</strong> make an unverifiable task a distinct third outcome — <code>success=False</code> with a verdict that says <em>no verification was possible</em>. Never let a file-existence heuristic produce the same result as a passing test run.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">H-04</span>
+      <span class="chip high">High</span>
+      <span class="loc">models/ollama.py:83–95, 120–135</span>
+    </div>
+    <div>
+      <h3>Ollama is never told the context size, so long prompts are silently cut</h3>
+      <p>The options block sets only <code>temperature</code> and <code>num_predict</code>. Without <code>num_ctx</code>, Ollama applies its default window — 4096 tokens on current builds, 2048 on older ones — and silently drops whatever overflows from the <em>front</em> of the conversation. Meanwhile the engine feeds it a full context block, a plan, and accumulated tool output.</p>
+      <p>The visible symptom is a model that "ignores instructions", forgets the file it just read, or re-creates work — usually blamed on the model's quality. It is a missing parameter. Paired with H-05 it is the most common practical failure mode of this system.</p>
+      <div class="fix"><strong>Fix:</strong> add <code>num_ctx</code> to the options, expose it in <code>ModelConfig</code>, and default it to the model's real window. Log <code>prompt_eval_count</code> against it so truncation becomes visible rather than silent.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">H-05</span>
+      <span class="chip high">High</span>
+      <span class="loc">agents/agent.py:287–341</span>
+    </div>
+    <div>
+      <h3>The agent transcript grows without bound and without loop detection</h3>
+      <p>Across up to fourteen tool iterations, every raw tool result is appended to <code>messages</code> and none is ever trimmed. <code>read_file</code> returns whole files; <code>search_code</code> returns up to 200 matching lines; the terminal returns full stdout <em>and</em> stderr. Nothing summarises, truncates, or drops older turns.</p>
+      <p>There is also no repetition guard: an agent that calls the same tool with the same failing arguments will do so until <code>max_tool_iters</code> is exhausted, burning the whole budget on one mistake.</p>
+      <div class="fix"><strong>Fix:</strong> cap each tool result before it enters the transcript (head+tail with a middle elision), keep a rolling window of recent turns with the system prompt and task pinned, and short-circuit when the last N calls are identical.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">H-06</span>
+      <span class="chip high">High</span>
+      <span class="verified">Reproduced</span>
+      <span class="loc">core/engine.py:398–408<br>tools/terminal.py:63–72</span>
+    </div>
+    <div>
+      <h3>Verification hardcodes <code>python</code> instead of the running interpreter</h3>
+      <p><code>_infer_verify_command()</code> returns the literal string <code>"python -m pytest -q"</code>, and <code>PythonExecTool</code> hardcodes <code>python</code> plus a Windows-only <code>venv/Scripts/python.exe</code> path with a <code>.replace("/", "\\")</code> that also mangles any argument containing a slash. Nothing uses <code>sys.executable</code>.</p>
+      <p>This is what makes two of the three failing tests fail: the subprocess resolves a system <code>python</code> that has no pytest, the verify step reports exit 1, and the self-heal loop burns its whole budget trying to fix code that was never broken. On Linux and macOS, where <code>python</code> often does not exist at all, the loop can never go green.</p>
+      <div class="fix"><strong>Fix:</strong> use <code>sys.executable</code> (or the workspace venv's interpreter, detected per platform) everywhere a Python process is spawned, and pass it through to the sandbox rather than relying on <code>PATH</code>.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">H-07</span>
+      <span class="chip high">High</span>
+      <span class="loc">tools/code_edit.py:38–58</span>
+    </div>
+    <div>
+      <h3><code>edit_file</code> does not check that <code>old_string</code> is unique</h3>
+      <p>The docstring promises "unique single replacement", but the non-<code>replace_all</code> branch takes <code>text.index(old_string)</code> and edits the first hit without ever counting occurrences. When a debugger agent targets a snippet that appears in several places — a common import line, a repeated <code>return None</code> — it silently modifies the wrong one and reports success. The self-heal loop then re-runs the same failing test and concludes the fix didn't work.</p>
+      <p>The backup is single-slot as well: <code>.bak</code> is overwritten on every edit, so the second edit to a file destroys the only copy of the original, and <code>undo_edit</code> can rewind exactly one step.</p>
+      <div class="fix"><strong>Fix:</strong> count matches and return an error asking for more surrounding context when the count is not 1. Keep timestamped backups, or write edits through git so undo is real.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">H-08</span>
+      <span class="chip high">High</span>
+      <span class="loc">tools/sandbox.py:71–75</span>
+    </div>
+    <div>
+      <h3>Agent-generated code inherits the full host environment</h3>
+      <p><code>run_env = dict(os.environ)</code> hands every subprocess the complete environment of the parent process — including <code>YACINE_MODEL_API_KEY</code>, <code>YACINE_TELEGRAM_TOKEN</code>, cloud credentials, SSH agent sockets, and anything else in the user's shell. The code being executed was written moments earlier by a language model acting on untrusted repository content.</p>
+      <p>The surrounding docstring claims isolation via "a dedicated workspace directory". In practice the only real controls are a timeout and an <code>RLIMIT_AS</code> ceiling on POSIX; there is no user, namespace, network, or filesystem isolation, and on Windows even the memory cap is absent.</p>
+      <div class="fix"><strong>Fix:</strong> build a minimal allowlisted environment (<code>PATH</code>, <code>HOME</code>, <code>TMPDIR</code>, locale) instead of copying <code>os.environ</code>. Then either soften the "sandbox" language in the docs or back it with a real container.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">H-09</span>
+      <span class="chip high">High</span>
+      <span class="loc">agents/agent.py:318<br>models/ollama.py:17–25</span>
+    </div>
+    <div>
+      <h3>Tool results are sent without the assistant turn that requested them</h3>
+      <p>After a tool call the loop appends <code>Message(role="assistant", content=resp.text)</code> — dropping the <code>tool_calls</code> field — then appends a <code>role="tool"</code> message. <code>_to_ollama_messages()</code> likewise carries no <code>tool_calls</code> through. The resulting transcript has orphaned tool results.</p>
+      <p>Ollama tolerates this; OpenAI-compatible backends reject it with a 400 ("messages with role 'tool' must be a response to a preceding message with tool_calls"), so the <code>openai_compat</code> provider cannot complete a multi-turn tool run. Even on Ollama, the model loses the record of what it asked for.</p>
+      <div class="fix"><strong>Fix:</strong> carry <code>tool_calls</code> on the assistant <code>Message</code> and serialise it in both provider adapters, matching each tool result to its <code>tool_call_id</code>.</p></div>
+    </div>
+  </article>
+</section>
+
+<section class="band">
+  <div class="band-head">
+    <h2>Medium — correctness, hygiene, and honesty of the docs</h2>
+    <p class="band-note">Not exploitable on their own, but several of these are what turn a small failure into a confusing one.</p>
+  </div>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-01</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">core/security.py:19–31, 47–58</span>
+    </div>
+    <div>
+      <h3>The permission model is on-by-default and the blocklist is cosmetic</h3>
+      <p><code>read_file</code>, <code>write_file</code>, <code>execute_command</code>, <code>delete_file</code> and <code>internet_access</code> all default to <code>True</code>; only <code>git_push</code> is off. So "every sensitive action is gated" means, out of the box, that every gate is open. <code>interactive_prompt()</code> — the escape hatch that would ask the user — is a stub that always returns <code>False</code> and is never called.</p>
+      <p><code>DANGEROUS_PATTERNS</code> is a regex blocklist, which is the wrong shape for this job: <code>rm -rf ~</code>, <code>rm -rf ./*</code>, <code>rm -fr /</code>, extra spaces, and any <code>$(…)</code> or base64 indirection all pass. A blocklist here gives the user confidence the system cannot back up.</p>
+      <div class="fix"><strong>Fix:</strong> default the destructive permissions off and wire a real approval callback. Keep the pattern list as a warning signal, not as the boundary — the boundary should be the path confinement from C-01 and argv-based execution from C-03.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-02</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">tools/filesystem.py:33, 106, 141<br>tools/code_edit.py:38<br>tools/registry.py:56</span>
+    </div>
+    <div>
+      <h3>Tools construct a fresh <code>SecurityEnforcer()</code> and discard the configured one</h3>
+      <p><code>make_sandbox()</code> carefully builds an enforcer from the active settings and injects it into the <code>Sandbox</code>. The file tools then ignore <code>self.sandbox.security</code> and instantiate <code>SecurityEnforcer()</code> inline, which re-reads the global settings singleton. Any per-task or per-session permission tightening is silently bypassed.</p>
+      <div class="fix"><strong>Fix:</strong> always use <code>self.sandbox.security</code>. Remove the inline constructions.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-03</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">tools/internet.py:32–47</span>
+    </div>
+    <div>
+      <h3>No SSRF guard on <code>http_request</code></h3>
+      <p>The tool fetches any URL the model produces, with redirects followed. Nothing blocks <code>127.0.0.1</code>, <code>169.254.169.254</code>, or private ranges — so the agent can reach its own unauthenticated API (C-02), the Ollama admin endpoints, a cloud metadata service, or anything else on the user's LAN. Content fetched this way is fed straight back into the prompt, which is also the delivery path for prompt injection into C-03.</p>
+      <div class="fix"><strong>Fix:</strong> resolve the host before connecting, reject loopback/link-local/private/reserved addresses, re-check after each redirect, and cap the response size.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-04</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">core/config.py:189–201</span>
+    </div>
+    <div>
+      <h3>Secrets are written back to <code>settings.yaml</code> in plaintext</h3>
+      <p><code>save_config()</code> serialises the entire settings model, so an <code>api_key</code> or a Telegram <code>bot_token</code> supplied through the environment is persisted into the YAML file on the next save. The <code>TelegramConfig</code> docstring states the token "stays in config / env, never logged" — but the round-trip means an env-only secret becomes a file-resident one, and <code>/api/telegram/test</code> mutates the live global config object with a token from an HTTP request body.</p>
+      <div class="fix"><strong>Fix:</strong> exclude secret fields from <code>save_config</code>, resolve them from the environment at use time, and stop mutating the shared settings singleton inside a request handler.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-05</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">memory/store.py:104–113</span>
+    </div>
+    <div>
+      <h3>The memory store rewrites the whole file on every append, unlocked</h3>
+      <p><code>_save()</code> opens the file in <code>"w"</code> mode and re-serialises every memory on each <code>add()</code> — quadratic as the store grows. There is no file lock and no atomic replace, while the API server handles requests on a thread pool and the engine writes memories from worker threads. A crash or a concurrent write during the truncate window loses the entire store.</p>
+      <div class="fix"><strong>Fix:</strong> append a single JSONL line for a new memory, and for full rewrites write to a temp file and <code>os.replace</code> it. Guard with a lock.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-06</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">core/engine.py:128–141</span>
+    </div>
+    <div>
+      <h3>Edits to a real project never make it back to the project</h3>
+      <p><code>run(project_path=…)</code> copies the user's tree into a per-task sandbox with <code>_sync_into_sandbox()</code>, works there, and commits there. There is no reverse sync and no diff handed back. A user who points the agent at their repository gets a green result, a commit inside a temp workspace, and an unchanged repository — with the changes discoverable only by digging into <code>workspace/tasks/&lt;id&gt;/</code>.</p>
+      <p>The copy loop also has no size ceiling, no symlink guard, and swallows every per-file failure with a bare <code>except: pass</code>, so a partial copy looks identical to a complete one.</p>
+      <div class="fix"><strong>Fix:</strong> decide the model explicitly — either work in a git worktree of the real repo and hand back a branch, or produce a patch the user applies. Either way, surface it in <code>TaskResult</code>.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-07</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">core/config.py:212–219</span>
+    </div>
+    <div>
+      <h3>The settings singleton ignores <code>config_path</code> after the first call</h3>
+      <p><code>get_settings(config_path)</code> only honours its argument when <code>_CONFIG</code> is <code>None</code>. Because <code>api/server.py</code> calls <code>get_settings()</code> at import time, every later request for a specific config file silently returns the default one — including <code>AutonomousEngine(config_path=…)</code>, whose parameter therefore does nothing in the server process.</p>
+      <div class="fix"><strong>Fix:</strong> cache per resolved path, or reload when the requested path differs from the cached one.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-08</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">core/engine.py:64–76</span>
+    </div>
+    <div>
+      <h3><code>_parse_exit</code> guesses when it should not have to</h3>
+      <p>The fallback branch treats any output containing the substring <code>"Error"</code> as failure and requires the literal <code>"OK"</code> for success. A passing test suite that prints the word "Error" in a log line reads as failed; a silent successful command with no <code>"OK"</code> also reads as failed. The exit code is available and authoritative — <code>ToolResult.data["returncode"]</code> is right there and unused at the call site.</p>
+      <div class="fix"><strong>Fix:</strong> branch on <code>exec_res.data["returncode"]</code> and <code>timed_out</code>; delete the text heuristic.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-09</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">tests/test_engine.py:233</span>
+    </div>
+    <div>
+      <h3>The third failing test depends on ambient git identity</h3>
+      <p><code>test_context_git_history_and_style</code> creates a repo, commits, and asserts the message appears in the log — but the commit is made in a <code>try/except: pass</code> block, so on a machine without <code>user.email</code> configured the commit never happens, <code>is_git_repo()</code> is still true, and the assertion fails. The test passes or fails based on the developer's global git config rather than on the code.</p>
+      <div class="fix"><strong>Fix:</strong> pass <code>-c user.name=… -c user.email=…</code> to the test's git invocations and assert the commit succeeded instead of swallowing the failure.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-10</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">across yacine/ (82 handlers)</span>
+    </div>
+    <div>
+      <h3>Failures are swallowed at a rate that makes debugging guesswork</h3>
+      <p>There are 82 broad <code>except Exception</code> handlers, 24 of which do nothing but <code>pass</code>. Several sit on load-bearing paths: MCP server loading in <code>registry.py</code>, the per-file copy in <code>_sync_into_sandbox</code>, embedder selection in <code>longterm.py</code>, and event emission in both the engine and the orchestrator. When the agent behaves oddly there is no trace of the swallowed cause anywhere.</p>
+      <div class="fix"><strong>Fix:</strong> log at debug with the exception at minimum, and narrow the caught types where the expected failure is known.</p></div>
+    </div>
+  </article>
+
+  <article>
+    <div class="gutter">
+      <span class="id">M-11</span>
+      <span class="chip med">Medium</span>
+      <span class="loc">pyflakes, 60 hits<br>tools/filesystem.py:172<br>core/engine.py:472<br>plugins/loader.py:64</span>
+    </div>
+    <div>
+      <h3>Dead code and small textual damage</h3>
+      <p>pyflakes reports about sixty findings beyond the two <code>NameError</code>s: unused imports in nearly every module, assigned-and-never-used locals in <code>cli.py</code> (<code>settings</code>, twice; <code>pmod</code>; <code>pdoc</code>) and <code>telegram.py</code> (<code>chat_id</code>), and f-strings with no placeholders in <code>context.py:224</code> and <code>db.py:191</code>.</p>
+      <p>Two more worth a pass while you're in there: <code>SearchCodeTool</code>'s 200-hit cap breaks only the inner line loop, so it keeps reading every remaining file for nothing; and <code>plugins/loader.py</code> carries the mangled docstring fragment <code>"a warning isMessage delivered"</code> — the fingerprint of an earlier find-and-replace that overwrote a word, which is exactly the failure mode H-07 describes.</p>
+      <div class="fix"><strong>Fix:</strong> run <code>ruff --fix</code> across the package — the project already ships a quality module that shells out to ruff, so it can be pointed at itself.</p></div>
+    </div>
+  </article>
+</section>
+
+<footer>
+  <p><strong>Suggested order:</strong> C-01 through C-03 first — they are small, local changes that restore the boundary the rest of the design assumes. Then H-01 and H-02, which are one-line imports. Then H-03, H-04 and H-06 together: those three are what stand between the loop and a run you can trust.</p>
+  <p style="margin-top:14px;">Method: <code>pyflakes</code> and <code>compileall</code> across <code>yacine/</code>, <code>tests/</code>, <code>plugins/</code>, <code>scripts/</code>; the full pytest suite under a clean venv with the pinned requirements; manual read of the security, sandbox, tool, engine, orchestrator, API and provider modules; and targeted probes against a live <code>Sandbox</code> to confirm the path-escape and interpreter findings. Probe artifacts were removed afterward.</p>
+</footer>
+
+</div>

@@ -1,0 +1,10 @@
+# Example scripted conversation for offline demo / testing.
+# Used with:  python main.py chat  (when model.provider = scripted)
+# Each turn is emitted in order; `match` (regex) gates a turn on the latest
+# tool result, enabling deterministic branching / self-heal demos.
+- text: "Hello! I am the Coder agent running in scripted/offline mode. I can call tools but there is no live model behind me. Try `python main.py run \"...\" --verify ...` with the scripted provider to see the autonomous loop, or switch to Ollama (see README)."
+- text: "I'll demonstrate a tool call." 
+  tool_calls:
+    - name: list_dir
+      arguments: { path: "." }
+- text: "That listed the workspace. In a live run the model would read relevant files, implement, then verify. See README.md for the live setup with Ollama + Qwen2.5-Coder."

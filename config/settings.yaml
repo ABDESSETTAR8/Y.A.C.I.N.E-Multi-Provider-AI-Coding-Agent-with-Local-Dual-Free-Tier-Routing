@@ -1,0 +1,48 @@
+# Y.A.C.I.N.E configuration. Edit and reload; no code changes needed.
+# Switch provider to "ollama" + set model to "qwen2.5-coder:7b" (after
+# `ollama pull qwen2.5-coder:7b`) for live autonomous runs.
+
+model:
+  provider: ollama            # ollama | openai | scripted
+  model: qwen2.5-coder:7b     # used when provider != scripted
+  base_url: "http://localhost:11434"
+  api_key: ""
+  temperature: 0.2
+  max_tokens: 4096
+  timeout: 1800               # generous: local 7B on a contended 8GB GPU can take minutes per call
+  script_path: "tests/fixtures/scripted_task.yaml"   # only for provider=scripted
+
+# Security / permissions — privacy-first by default. git_push is OFF so the
+# agent never pushes without explicit opt-in.
+permissions:
+  read_file: true
+  write_file: true
+  execute_command: true
+  delete_file: true
+  internet_access: true
+  git_push: false
+
+max_plan_iterations: 20
+max_self_heal_iterations: 10
+stream: true
+telemetry: true
+# Phase A engine behaviour toggles
+enable_review: true
+enable_docs: true
+enable_code_quality: true
+coverage_min_pct: 0
+require_approval: false
+
+# Telegram channel bridge — bot posts pipeline results to a channel/group and
+# accepts `/orchestrate <request>` commands. Enable, then run:
+#   yacine telegram            # starts polling (Ctrl+C to stop)
+#   yacine telegram --once     # post one test message and exit
+# Or test from the API:  POST /api/telegram/test {"token":..., "channel":...}
+# Token can also come from env YACINE_TELEGRAM_TOKEN (kept out of this file).
+telegram:
+  enabled: false
+  bot_token: ""
+  channel: ""              # @channel_username or numeric chat_id
+  poll_timeout: 30
+  allowed_users: []        # Telegram user ids allowed to command; [] = anyone
+  stream_to_channel: true

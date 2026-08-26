@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Y.A.C.I.N.E</title>
+  <link rel="icon" type="image/png" href="/ui/static/yacine-avatar.png" />
+  <link rel="icon" type="image/svg+xml" href="/ui/static/yacine-avatar.svg" />
+  <link rel="stylesheet" href="/ui/static/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Left rail: conversations + projects (Claude-style) -->
+    <aside class="rail">
+      <div class="rail-top">
+        <div class="brand">Y.A.C.I.N.E</div>
+        <button id="new-chat" class="new-btn" title="New chat">+ New</button>
+      </div>
+
+      <div class="rail-tabs">
+        <button class="rail-tab active" data-view="chats">Chats</button>
+        <button class="rail-tab" data-view="projects">Projects</button>
+      </div>
+
+      <div class="rail-search">
+        <input id="rail-search" placeholder="Search…" />
+      </div>
+
+      <div class="rail-list" id="rail-list"></div>
+
+      <div class="rail-foot">
+        <span class="mon" id="mon-gpu" title="GPU">GPU —</span>
+        <span class="model-badge" id="model-badge" title="Active model">—</span>
+        <select id="model-select" title="Select model"></select>
+      </div>
+    </aside>
+
+    <!-- Center: chat -->
+    <main class="center">
+      <header class="chat-head">
+        <div class="chat-title" id="chat-title">New chat</div>
+        <div class="chat-meta" id="chat-meta">No folder selected</div>
+        <div class="chat-head-actions">
+          <button id="pick-folder" class="ghost-btn" title="Select working folder for this chat">📁 Folder</button>
+          <button id="toggle-panel" class="ghost-btn" title="Toggle side panel">⮞ Panel</button>
+        </div>
+      </header>
+
+      <div class="messages" id="chat"></div>
+
+      <div class="composer">
+        <div class="composer-toggles">
+          <label class="chip"><input type="checkbox" id="pipeline-on" /> 4-agent pipeline</label>
+          <label class="chip"><input type="checkbox" id="verify-on" /> verify</label>
+          <input id="verify-cmd" class="verify-cmd" placeholder="pytest -q" />
+          <span class="hint">Enter = send · Shift+Enter = newline</span>
+        </div>
+        <div class="composer-row">
+          <textarea id="prompt" rows="2" placeholder="Message Y.A.C.I.N.E…"></textarea>
+          <button id="send" class="primary">↑</button>
+          <button id="stop" class="ghost-btn stop-btn" hidden>■ Stop</button>
+        </div>
+      </div>
+    </main>
+
+    <!-- Right: collapsible panel (thinking / artifacts / files) -->
+    <aside class="panel" id="panel">
+      <div class="panel-tabs">
+        <button class="panel-tab active" data-ptab="progress">Progress</button>
+        <button class="panel-tab" data-ptab="thinking">Thinking</button>
+        <button class="panel-tab" data-ptab="files">Files</button>
+        <button class="panel-tab" data-ptab="log">Log</button>
+      </div>
+      <div class="panel-body">
+        <div class="panel-pane active" data-ppane="progress">
+          <div id="progress-pane" class="progress-pane">
+            <div class="dim pad">Run the 4-agent pipeline to see live progress, the active agent, and what each agent is thinking & processing.</div>
+          </div>
+        </div>
+        <div class="panel-pane" data-ppane="thinking">
+          <div id="thinking" class="thinking-pane"><div class="dim pad">Live reasoning streams here when a run is active.</div></div>
+        </div>
+        <div class="panel-pane" data-ppane="files">
+          <div id="explorer-tree" class="tree"><div class="dim pad">Select a folder to browse its files, or run a task to see generated artifacts.</div></div>
+        </div>
+        <div class="panel-pane" data-ppane="log">
+          <div id="event-log" class="log"></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Folder picker modal — Windows "Save As" style -->
+  <div class="modal-mask" id="folder-modal" hidden>
+    <div class="modal folder-picker">
+      <div class="fp-toolbar">
+        <button id="fp-back" class="fp-nav" title="Back">‹</button>
+        <button id="fp-up" class="fp-nav" title="Up one level">⌃</button>
+        <div class="fp-address" id="folder-breadcrumb"></div>
+        <div class="fp-search"><input id="fp-search" placeholder="Search…" /></div>
+      </div>
+      <div class="fp-body">
+        <div class="fp-navpane" id="fp-navpane">
+          <div class="fp-nav-head">Quick access</div>
+          <div class="fp-quick" id="fp-quick"></div>
+        </div>
+        <div class="fp-main">
+          <div class="fp-listhead">
+            <span class="c-name">Name</span>
+            <span class="c-type">Type</span>
+          </div>
+          <div class="fp-list" id="folder-list"></div>
+        </div>
+      </div>
+      <div class="fp-newfolder" id="folder-newfolder">
+        <input id="newfolder-name" placeholder="New folder name…" />
+        <button id="newfolder-btn" class="ghost-btn">Create</button>
+      </div>
+      <div class="fp-foot">
+        <div class="fp-foot-path">
+          <span class="dim">Selected folder</span>
+          <span id="folder-current" class="fp-current"></span>
+        </div>
+        <div class="fp-foot-actions">
+          <button id="folder-new" class="ghost-btn">📁 New folder</button>
+          <button id="folder-close" class="ghost-btn">Cancel</button>
+          <button id="folder-choose" class="primary">Select folder</button>
+        </div>
+      </div>
+      <div class="fp-resize" id="fp-resize" title="Drag to resize"></div>
+    </div>
+  </div>
+
+  <script src="/ui/static/app.js"></script>
+</body>
+</html>
