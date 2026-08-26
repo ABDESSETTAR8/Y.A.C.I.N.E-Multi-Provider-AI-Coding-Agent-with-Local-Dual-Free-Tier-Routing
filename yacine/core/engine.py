@@ -69,6 +69,27 @@ class TaskResult:
     research: str = ""
 
 
+# Directories that are machinery, not deliverables. A user looking at the
+# artifact list of a finished task wants calc.py and test_calc.py — not the
+# 30-odd files git and pytest create inside the workspace while working.
+NOISE_DIRS = {".git", ".pytest_cache", "__pycache__", ".yacine_backups",
+              ".mypy_cache", ".ruff_cache", "node_modules", ".venv", "venv",
+              ".tox", ".idea", ".vscode"}
+
+
+def _is_deliverable(path: Path, root: Path) -> bool:
+    """True when `path` is a file the user actually asked for."""
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False
+    if any(part in NOISE_DIRS for part in rel.parts):
+        return False
+    if path.suffix == ".bak" or path.name == "_yacine_run.py":
+        return False
+    return path.is_file()
+
+
 # Outcome detection: did the verify command succeed?
 def _parse_exit(text: str) -> bool:
     """Heuristic: a sandbox/terminal result with exit code 0 and no TIMEOUT is green."""
@@ -477,7 +498,8 @@ class AutonomousEngine:
 
     def _produced_files(self) -> int:
         """How many files the agents actually created. Progress, NOT success."""
-        return sum(1 for p in self.sandbox.workspace.rglob("*") if p.is_file())
+        root = self.sandbox.workspace
+        return sum(1 for p in root.rglob("*") if _is_deliverable(p, root))
 
     def _add_smoke_test(self, request: str) -> None:
         # Let the coder add a minimal smoke test so we can verify.
@@ -515,11 +537,9 @@ class AutonomousEngine:
         except Exception:
             pass
         # Fallback: list created/changed files in the workspace.
-        files = [str(p.relative_to(self.sandbox.workspace))
-                 for p in self.sandbox.workspace.rglob("*")
-                 if p.is_file() and ".bak" not in p.suffixes
-                 and "__pycache__" not in p.parts
-                 and ".yacine_backups" not in p.parts]
+        ws = self.sandbox.workspace
+        files = [str(p.relative_to(ws)) for p in ws.rglob("*")
+                 if _is_deliverable(p, ws)]
         return "Changed files:\n" + "\n".join(files[:40])
 
     # -- research (B) ------------------------------------------------------
@@ -555,10 +575,6 @@ class AutonomousEngine:
         return out["text"]
 
     def _list_artifacts(self, ws: Path) -> List[str]:
-        out = []
-        for p in ws.rglob("*"):
-            if p.is_file() and ".bak" not in p.suffixes \
-                    and ".yacine_backups" not in p.parts \
-                    and "__pycache__" not in p.parts:
-                out.append(str(p.relative_to(ws)))
+        out = [str(p.relative_to(ws)) for p in ws.rglob("*")
+               if _is_deliverable(p, ws)]
         return sorted(out)[:50]
