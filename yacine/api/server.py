@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..core.config import get_settings
+from ..core.auth import get_api_key, key_source
 from ..core.logger import EventBus, get_bus, get_logger
 from ..core.engine import AutonomousEngine, TaskResult
 from ..models.manager import ModelManager
@@ -52,11 +53,7 @@ _manager = ModelManager(logger=_logger)
 # provider's model API key is never reused for this — they are different
 # secrets with different audiences.
 # --------------------------------------------------------------------------
-API_KEY = os.environ.get("YACINE_API_KEY", "").strip()
-_EPHEMERAL_KEY = False
-if not API_KEY:
-    API_KEY = secrets.token_urlsafe(32)
-    _EPHEMERAL_KEY = True
+API_KEY = get_api_key(Path(_settings.data_dir))
 
 # Browsers must not be able to reach this server from arbitrary pages: a
 # wildcard origin turns every site the user visits into a remote shell.
@@ -650,10 +647,18 @@ async def upload_files(request: Request):
 
 def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
     import uvicorn
-    if _EPHEMERAL_KEY:
-        print(f"\n  Y.A.C.I.N.E API key (this run only): {API_KEY}")
-        print("  Send it as the X-API-Key header, or set YACINE_API_KEY to fix it.\n")
+    # flush=True matters in the frozen .exe: stdout is block-buffered when it
+    # is not a terminal, so without it this banner can sit unseen in the buffer
+    # while the user stares at a console that never shows them the API key.
+    banner = [
+        f"\n  UI:      http://{host}:{port}/ui   (opens without a key)",
+        f"  API key: {API_KEY}",
+        f"  source:  {key_source()}",
+        "  External API clients send it as the X-API-Key header.\n",
+    ]
     if host not in ("127.0.0.1", "localhost", "::1"):
-        print(f"  WARNING: binding to {host} exposes an agent that runs shell "
-              f"commands to your network.\n")
+        banner.append(f"  WARNING: binding to {host} exposes an agent that runs "
+                      f"shell commands to your network.\n")
+    for line in banner:
+        print(line, flush=True)
     uvicorn.run(app, host=host, port=port, log_level="info")

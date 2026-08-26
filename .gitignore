@@ -16,3 +16,6 @@ dist/
 *.exe
 *.nupkg
 gui/wv2pkg/
+
+# The local server's API key - never commit it
+data/api_key

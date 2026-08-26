@@ -343,3 +343,65 @@ def test_context_index_reuses_unchanged_files(tmp_path):
     ce.indexed = False
     ce.index()
     assert "999" in ce.files[str(target)].snippet
+
+
+# --------------------------------------------------------------------------
+# Packaging: the frozen .exe must serve a working, authenticated UI
+# --------------------------------------------------------------------------
+def test_ui_page_carries_the_api_key():
+    """The UI is served by the same process that requires a key, so it is
+    handed one. Without this the bundled UI 401s on every call."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    import yacine.api.server as srv
+
+    client = TestClient(srv.app, base_url="http://127.0.0.1:8765")
+    page = client.get("/ui")
+    assert page.status_code == 200
+    assert "YACINE_API_KEY" in page.text, "UI was served without a key"
+    assert "X-API-Key" in page.text, "UI has no auth shim on fetch"
+    assert srv.API_KEY in page.text
+
+
+def test_api_key_persists_across_processes(tmp_path):
+    """A double-clicked .exe must not invent a new key on every launch."""
+    from yacine.core import auth
+    auth.reset()
+    first = auth.get_api_key(tmp_path)
+    auth.reset()
+    second = auth.get_api_key(tmp_path)
+    assert first == second
+    assert (tmp_path / auth.KEY_FILENAME).exists()
+
+
+def test_env_api_key_wins_and_is_not_written(tmp_path, monkeypatch):
+    from yacine.core import auth
+    monkeypatch.setenv("YACINE_API_KEY", "from-the-environment")
+    auth.reset()
+    assert auth.get_api_key(tmp_path) == "from-the-environment"
+    assert not (tmp_path / auth.KEY_FILENAME).exists(), "env key was persisted"
+    auth.reset()
+
+
+def test_pyinstaller_spec_bundles_the_ui_at_the_path_the_code_reads():
+    """The spec once copied the UI to yacine/ui/static/static, one level below
+    where _ui_dir() looks — so the .exe built fine and served a blank UI."""
+    spec = ROOT / "yacine.spec"
+    if not spec.exists():
+        pytest.skip("spec not present")
+
+    class _Fake:
+        def __init__(self, *a, **k):
+            self.__dict__.update(k)
+            self.pure = self.zipped_data = self.scripts = None
+            self.binaries = self.zipfiles = self.datas = None
+
+    ns = {"SPECPATH": str(ROOT), "Analysis": _Fake, "PYZ": _Fake,
+          "EXE": _Fake, "COLLECT": _Fake}
+    exec(compile(spec.read_text(encoding="utf-8"), "yacine.spec", "exec"), ns)
+
+    dests = {dest for _, dest in ns["added_files"]}
+    assert "yacine/ui/static" in dests, f"UI not bundled where it is read: {dests}"
+    for src_path, _ in ns["added_files"]:
+        assert Path(src_path).exists(), f"spec references a missing path: {src_path}"
+    assert ns["exe"].__dict__.get("console") is True, "console must stay on: the API key is printed there"

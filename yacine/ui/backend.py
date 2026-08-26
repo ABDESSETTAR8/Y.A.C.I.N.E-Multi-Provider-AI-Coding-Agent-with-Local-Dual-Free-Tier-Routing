@@ -12,6 +12,7 @@ Routes added:
 """
 from __future__ import annotations
 
+import json
 import sys
 import platform
 import shutil
@@ -156,12 +157,54 @@ def _system_stats() -> Dict[str, object]:
 router = APIRouter(prefix="/ui", tags=["ui"])
 
 
+# Injected into the page so the UI can authenticate against its own server.
+#
+# The API requires a key on every call. The UI is served by that same process,
+# so it is handed the key here and adds it to every same-origin request. This
+# is safe: CORS is pinned to this server's origin and the Host header is
+# checked, so a page on another site cannot READ this HTML to steal the key —
+# it can only send requests, which are rejected without one.
+_AUTH_SHIM = """<script>
+window.YACINE_API_KEY = %(key)s;
+(function () {
+  var realFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    var url = (typeof input === "string") ? input : (input && input.url) || "";
+    var sameOrigin = url.startsWith("/") ||
+                     url.startsWith(window.location.origin);
+    if (sameOrigin) {
+      init = init || {};
+      var h = new Headers(init.headers || (typeof input === "object" && input.headers) || {});
+      if (!h.has("X-API-Key")) h.set("X-API-Key", window.YACINE_API_KEY);
+      init.headers = h;
+    }
+    return realFetch(input, init);
+  };
+  // WebSockets cannot carry headers, so the key rides in the query string.
+  window.yacineWsUrl = function (path) {
+    var proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return proto + "//" + window.location.host + path +
+           "?api_key=" + encodeURIComponent(window.YACINE_API_KEY);
+  };
+})();
+</script>"""
+
+
 @router.get("", response_class=HTMLResponse)
 def ui_index():
     index = UI_DIR / "index.html"
     if not index.exists():
-        return HTMLResponse("<h1>Y.A.C.I.N.E UI</h1><p>index.html missing.</p>", status_code=200)
-    return FileResponse(index)
+        return HTMLResponse(
+            "<h1>Y.A.C.I.N.E UI</h1><p>index.html was not found at "
+            f"<code>{UI_DIR}</code>.</p>", status_code=200)
+    from ..core.auth import get_api_key
+    html = index.read_text(encoding="utf-8", errors="ignore")
+    shim = _AUTH_SHIM % {"key": json.dumps(get_api_key())}
+    if "</head>" in html:
+        html = html.replace("</head>", shim + "\n</head>", 1)
+    else:
+        html = shim + html
+    return HTMLResponse(html)
 
 
 @router.get("/static/{path:path}")
