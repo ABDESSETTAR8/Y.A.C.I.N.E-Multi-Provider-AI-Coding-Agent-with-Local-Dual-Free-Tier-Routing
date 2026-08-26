@@ -11,6 +11,27 @@ model:
   max_tokens: 4096
   timeout: 1800               # generous: local 7B on a contended 8GB GPU can take minutes per call
   script_path: "tests/fixtures/scripted_task.yaml"   # only for provider=scripted
+  # Context window. MUST be set: unset, Ollama defaults to 4096 (2048 on older
+  # builds) and silently drops whatever overflows, which looks like the model
+  # ignoring instructions. It is also the main speed/VRAM dial -- the KV cache
+  # grows with it, and on 8 GB a 7B model at too large a window spills into
+  # system RAM and slows down several times over. SLOW REPLIES? Try 4096.
+  num_ctx: 8192
+  # How long Ollama keeps this model in VRAM after replying. "0" evicts it
+  # immediately, which means the NEXT request reloads it from disk -- seconds
+  # of delay per turn. Only use "0" if you are juggling models on a tiny GPU.
+  keep_alive: "10m"
+
+# The conversational chat tab uses a separate, small model so replies are
+# snappy and it stays resident between messages. Do not point this at the 7B
+# coder model unless you want every chat turn to cost a full generation.
+chat_model:
+  provider: ollama
+  model: qwen2.5:3b
+  keep_alive: "15m"           # stay warm between turns
+  max_tokens: 1024            # short chat replies
+  temperature: 0.3
+  num_ctx: 4096               # chat turns are short; save VRAM for the coder
 
 # Security / permissions — privacy-first by default. git_push is OFF so the
 # agent never pushes without explicit opt-in.
@@ -26,10 +47,15 @@ max_plan_iterations: 20
 max_self_heal_iterations: 10
 stream: true
 telemetry: true
-# Phase A engine behaviour toggles
-enable_review: true
-enable_docs: true
-enable_code_quality: true
+# Phase A engine behaviour toggles.
+#
+# SPEED: each of these runs EXTRA full agent turns after your code is already
+# green -- review and security are two more model calls, docs is a third. On a
+# local 7B that can easily triple the wall-clock time of a task. Turn them off
+# for fast iteration and back on before you care about the output.
+enable_review: true          # Reviewer + Security agents  (2 extra model calls)
+enable_docs: true            # Docs agent                  (1 extra model call)
+enable_code_quality: true    # black/ruff/eslint -- cheap, no model call
 coverage_min_pct: 0
 require_approval: false
 

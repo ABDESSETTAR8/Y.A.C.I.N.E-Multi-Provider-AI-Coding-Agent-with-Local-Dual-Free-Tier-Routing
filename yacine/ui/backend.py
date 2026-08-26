@@ -50,16 +50,26 @@ def _ui_dir() -> Path:
 UI_DIR = _ui_dir()
 
 
+# nvidia-smi costs 100-500ms per call, and considerably more while the GPU is
+# busy generating — which is exactly when the UI polls hardest. Remember when
+# there is no NVIDIA GPU at all so we stop paying for the probe forever.
+_NO_GPU = False
+
+
 def _gpu_stats() -> Dict[str, object]:
     """Parse nvidia-smi for GPU usage; empty if no NVIDIA GPU / tool."""
+    global _NO_GPU
+    if _NO_GPU:
+        return {}
     try:
         import subprocess
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=3,
         )
         if out.returncode != 0:
+            _NO_GPU = True
             return {}
         parts = [p.strip() for p in out.stdout.strip().split(",")]
         if len(parts) >= 5:
@@ -70,6 +80,8 @@ def _gpu_stats() -> Dict[str, object]:
                 "mem_total_mb": float(parts[3] or 0),
                 "temperature_c": float(parts[4] or 0),
             }
+    except FileNotFoundError:
+        _NO_GPU = True          # nvidia-smi is not installed; never retry
     except Exception:
         pass
     return {}
@@ -77,7 +89,6 @@ def _gpu_stats() -> Dict[str, object]:
 
 def _system_stats() -> Dict[str, object]:
     """Lightweight system stats without external deps (psutil optional)."""
-    import subprocess
     stats: Dict[str, object] = {"platform": platform.system()}
     # CPU percent via a short busy-wait-free probe is not trivial without psutil;
     # fall back to nproc count + load average on POSIX.
@@ -91,20 +102,30 @@ def _system_stats() -> Dict[str, object]:
     # Memory via cgroup/proc on Linux, or wmic on Windows.
     try:
         if platform.system() == "Windows":
-            out = subprocess.run(
-                ["wmic", "OS", "get", "FreePhysicalMemory,TotalVisibleMemorySize",
-                 "/Value"], capture_output=True, text=True, timeout=5)
-            mem = {}
-            for line in out.stdout.splitlines():
-                if "=" in line:
-                    k, _, v = line.partition("=")
-                    mem[k.strip()] = int(v.strip() or 0)
-            total_kb = mem.get("TotalVisibleMemorySize", 0)
-            free_kb = mem.get("FreePhysicalMemory", 0)
-            used_kb = max(total_kb - free_kb, 0)
-            stats["ram_used_gb"] = round(used_kb / 1e6, 1)
-            stats["ram_total_gb"] = round(total_kb / 1e6, 1)
-            stats["ram_percent"] = round(100 * used_kb / total_kb, 1) if total_kb else 0
+            # GlobalMemoryStatusEx via ctypes — microseconds, no process spawn.
+            # `wmic` was costing 0.5-2 SECONDS per call here, every poll, which
+            # is a large part of why the UI felt like it was dragging.
+            import ctypes
+
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            m = _MEMORYSTATUSEX()
+            m.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+            total = int(m.ullTotalPhys)
+            used = total - int(m.ullAvailPhys)
+            stats["ram_used_gb"] = round(used / 1e9, 1)
+            stats["ram_total_gb"] = round(total / 1e9, 1)
+            stats["ram_percent"] = round(100 * used / total, 1) if total else 0
         else:
             # Linux: /proc/meminfo
             info = (Path("/proc/meminfo").read_text(errors="ignore")
@@ -154,11 +175,24 @@ def ui_static(path: str):
 
 
 # Monitor endpoint (registered under /api)
+# The UI polls this on a timer, so the answer is cached: hardware stats do not
+# change meaningfully between polls, and recomputing them mid-generation steals
+# time from the thing the user is actually waiting for.
+_MONITOR_TTL = 2.5
+_monitor_cache: Dict[str, object] = {}
+_monitor_at = 0.0
+
+
 def monitor_endpoint():
-    stats: Dict[str, object] = {"timestamp": time.time()}
+    global _monitor_cache, _monitor_at
+    now = time.time()
+    if _monitor_cache and (now - _monitor_at) < _MONITOR_TTL:
+        return _monitor_cache
+    stats: Dict[str, object] = {"timestamp": now}
     try:
         stats["system"] = _system_stats()
-    except Exception:
-        stats["system"] = {"error": "psutil not installed"}
+    except Exception as e:  # noqa: BLE001
+        stats["system"] = {"error": f"unavailable: {type(e).__name__}"}
     stats["gpu"] = _gpu_stats()
+    _monitor_cache, _monitor_at = stats, now
     return stats

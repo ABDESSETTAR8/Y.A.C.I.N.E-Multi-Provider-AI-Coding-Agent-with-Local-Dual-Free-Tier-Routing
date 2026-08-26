@@ -36,6 +36,7 @@ class FileRecord:
     symbols: List[str] = field(default_factory=list)
     sha: str = ""
     snippet: str = ""  # first chunk of text for preview
+    mtime: float = 0.0  # used to skip re-reading unchanged files
 
 
 _LANG_BY_EXT = {
@@ -80,22 +81,43 @@ class ContextEngine:
 
     # -- indexing ---------------------------------------------------------
     def index(self, force: bool = False) -> int:
+        """Index the tree, re-reading only what changed.
+
+        Indexing reads and hashes the full text of every source file. Doing
+        that from scratch on every task and every /context/summary call is the
+        single most expensive non-model operation in the system — on a real
+        repository it is seconds of disk I/O before the model is even asked
+        anything. Records are now reused when a file's size and mtime are
+        unchanged, so a re-index of an untouched tree costs one stat() per file.
+        """
         if self.indexed and not force:
             return len(self.files)
+        previous = {} if force else dict(self.files)
         self.files.clear()
         if self.logger:
             self.logger.info("context", f"Indexing {self.root}")
+        reused = 0
         for p in self._walk():
+            key = str(p)
             try:
+                cached = previous.get(key)
+                if cached is not None:
+                    st = p.stat()
+                    if cached.size == st.st_size and cached.mtime == st.st_mtime:
+                        self.files[key] = cached
+                        reused += 1
+                        continue
                 rec = self._index_file(p)
                 if rec:
-                    self.files[str(p)] = rec
-            except Exception as e:
+                    self.files[key] = rec
+            except OSError as e:
                 if self.logger:
                     self.logger.warning("context", f"skip {p}: {e}")
         self.indexed = True
         if self.logger:
-            self.logger.info("context", f"Indexed {len(self.files)} files")
+            self.logger.info(
+                "context",
+                f"Indexed {len(self.files)} files ({reused} unchanged, not re-read)")
         return len(self.files)
 
     def _walk(self):
@@ -111,24 +133,25 @@ class ContextEngine:
         ext = path.suffix.lower()
         lang = _LANG_BY_EXT.get(ext, "text")
         try:
-            size = path.stat().st_size
+            st = path.stat()
+            size, mtime = st.st_size, st.st_mtime
         except OSError:
             return None
         if size > 2_000_000:  # skip huge binaries
             return FileRecord(path=str(path), rel=rel, language="binary",
-                              size=size, ext=ext)
+                              size=size, ext=ext, mtime=mtime)
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             return FileRecord(path=str(path), rel=rel, language=lang,
-                              size=size, ext=ext)
+                              size=size, ext=ext, mtime=mtime)
         sha = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:12]
         imports = self._extract(_IMPORT_PATTERNS, lang, text)
         symbols = self._extract(_SYMBOL_PATTERNS, lang, text)
         snippet = text[:MAX_FILE_CHARS]
         return FileRecord(path=str(path), rel=rel, language=lang, size=size,
                           ext=ext, imports=imports, symbols=symbols,
-                          sha=sha, snippet=snippet)
+                          sha=sha, snippet=snippet, mtime=mtime)
 
     @staticmethod
     def _extract(patterns: Dict[str, re.Pattern], lang: str, text: str) -> List[str]:

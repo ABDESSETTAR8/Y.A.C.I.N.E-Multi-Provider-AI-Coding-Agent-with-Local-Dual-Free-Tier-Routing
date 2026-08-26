@@ -70,10 +70,18 @@ class ModelConfig(BaseModel):
     temperature: float = 0.2
     max_tokens: int = 4096
     timeout: int = 300
-    # Context window handed to the provider. Ollama otherwise applies its own
-    # default (4096, or 2048 on older builds) and silently truncates anything
-    # longer, which is the usual cause of a model "ignoring" its instructions.
-    # Raise it to the model's real window; lower it if VRAM is tight.
+    # Context window handed to the provider.
+    #
+    # This must be set explicitly: left unset, Ollama applies its own default
+    # (4096, or 2048 on older builds) and SILENTLY truncates anything longer,
+    # which is the usual cause of a model appearing to ignore its instructions.
+    #
+    # It is also a speed/VRAM dial. The KV cache grows with this value, so on a
+    # card with little headroom (a 7B model on 8 GB) too large a window pushes
+    # layers out of VRAM into system RAM and generation becomes several times
+    # slower. If replies are slow and the GPU is full, LOWER this to 4096
+    # before blaming the model. Raise it only when long files are being
+    # truncated and the GPU has room.
     num_ctx: int = 8192
     # How long Ollama keeps the model resident in VRAM after a response. On an
     # 8 GB GPU use a short window (e.g. "1m") or force immediate eviction by

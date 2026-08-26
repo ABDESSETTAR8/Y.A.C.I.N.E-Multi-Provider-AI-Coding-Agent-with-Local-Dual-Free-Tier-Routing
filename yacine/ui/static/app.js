@@ -148,7 +148,11 @@
       $("#mon-gpu").textContent = g.name ? `GPU ${g.mem_used_mb}/${g.mem_total_mb}MB` : "GPU —";
     }).catch(() => {});
   }
-  setInterval(updateMonitors, 3000); updateMonitors();
+  // Poll hardware stats on a slow timer, and not at all when the window is
+  // hidden or the browser is throttling background tabs. This used to fire
+  // every 3s and spawn subprocesses on the server each time.
+  setInterval(() => { if (!document.hidden) updateMonitors(); }, 8000);
+  updateMonitors();
 
   // ---- Folder modal (Windows "Save As" style) ----
   let folderCallback = null;

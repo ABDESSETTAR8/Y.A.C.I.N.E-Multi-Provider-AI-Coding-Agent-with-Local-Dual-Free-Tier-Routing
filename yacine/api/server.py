@@ -230,11 +230,13 @@ async def chat_stream(req: ChatRequest, request: Request):
     # the model stays resident between turns. A one-shot model switch (incl.
     # switching back to the heavy coder model) is still allowed per-request.
     chat_cfg = _settings.chat_model
-    prev_provider, prev_model = _manager.cfg.provider, _manager.model_name
+    # set_model is a no-op when this is already the active configuration, so
+    # repeated chat turns no longer rebuild the provider or churn the model.
     _manager.set_model(
         chat_cfg.provider, chat_cfg.model,
         keep_alive=chat_cfg.keep_alive, max_tokens=chat_cfg.max_tokens,
         temperature=chat_cfg.temperature, timeout=chat_cfg.timeout,
+        num_ctx=getattr(chat_cfg, "num_ctx", None),
     )
 
     # Optional one-shot override for this turn only.
@@ -253,27 +255,39 @@ async def chat_stream(req: ChatRequest, request: Request):
                 Message(role="user", content=req.message)]
 
     async def gen():
+        # Tokens are PUSHED through a queue as the worker produces them. The
+        # previous version appended to a shared string and woke every 50ms to
+        # diff it, so each token waited up to 50ms for a poll it could have
+        # skipped — visible as a reply that trickles out slower than the model
+        # is actually generating.
         loop = asyncio.get_event_loop()
-        buf = {"text": ""}
+        queue: asyncio.Queue = asyncio.Queue()
+        parts: list = []
+        DONE = object()
+
         def worker():
             try:
                 for chunk in _manager.stream(messages, tools=None):
-                    buf["text"] += chunk.delta
-            except Exception as e:
-                buf["text"] = f"[error: {e}]"
-        future = loop.run_in_executor(None, worker)
-        seen = 0
-        while not future.done() or seen < len(buf["text"]):
-            await asyncio.sleep(0.05)
-            if len(buf["text"]) > seen:
-                new = buf["text"][seen:]
-                seen = len(buf["text"])
-                yield {"event": "token", "data": new}
-        # Restore the heavy model config for any subsequent pipeline/task work.
-        _manager.set_model(prev_provider, prev_model,
-                          keep_alive=_manager.cfg.keep_alive,
-                          max_tokens=_manager.cfg.max_tokens)
-        yield {"event": "done", "data": json.dumps({"response": buf["text"], "tool_calls": 0})}
+                    if chunk.delta:
+                        loop.call_soon_threadsafe(queue.put_nowait, chunk.delta)
+            except Exception as e:  # noqa: BLE001
+                loop.call_soon_threadsafe(queue.put_nowait, f"[error: {e}]")
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, DONE)
+
+        loop.run_in_executor(None, worker)
+        while True:
+            item = await queue.get()
+            if item is DONE:
+                break
+            parts.append(item)
+            yield {"event": "token", "data": item}
+
+        text = "".join(parts)
+        # Leave the fast chat model configured. Restoring the heavy coder model
+        # here forced Ollama to swap models in VRAM between every chat turn; the
+        # task/pipeline paths set the model they need when they run.
+        yield {"event": "done", "data": json.dumps({"response": text, "tool_calls": 0})}
     return EventSourceResponse(gen())
 
 

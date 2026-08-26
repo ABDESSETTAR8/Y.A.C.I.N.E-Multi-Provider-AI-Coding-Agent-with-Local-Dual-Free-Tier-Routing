@@ -253,3 +253,93 @@ def test_api_does_not_allow_wildcard_origins():
     import yacine.api.server as srv
     assert "*" not in srv.ALLOWED_ORIGINS
     assert srv.API_KEY, "server started with an empty API key"
+
+
+# --------------------------------------------------------------------------
+# Performance regressions (2026-08-26): things that made the app feel slow
+# --------------------------------------------------------------------------
+def test_set_model_preserves_keep_alive_and_num_ctx():
+    """The chat tab asks for a warm, small-context model. Dropping either
+    override meant a full model reload from disk on every single message."""
+    from yacine.models.manager import ModelManager
+    from yacine.core.config import ModelConfig
+    m = ModelManager(model_config=ModelConfig(provider="ollama", model="big",
+                                              keep_alive="0", num_ctx=8192))
+    m.set_model("ollama", "small", keep_alive="15m", num_ctx=4096)
+    assert m.cfg.keep_alive == "15m"
+    assert m.cfg.num_ctx == 4096
+    assert m.provider._options({})["num_ctx"] == 4096
+
+
+def test_set_model_is_a_noop_when_nothing_changed():
+    from yacine.models.manager import ModelManager
+    from yacine.core.config import ModelConfig
+    m = ModelManager(model_config=ModelConfig(provider="ollama", model="m"))
+    before = m.provider
+    m.set_model("ollama", "m")
+    assert m.provider is before, "provider churned on a no-op switch"
+
+
+def test_monitor_endpoint_is_cached():
+    """The UI polls this on a timer; each miss used to spawn subprocesses."""
+    import time
+    from yacine.ui import backend
+    backend._monitor_cache, backend._monitor_at = {}, 0.0
+    first = backend.monitor_endpoint()
+    t0 = time.perf_counter()
+    for _ in range(50):
+        again = backend.monitor_endpoint()
+    elapsed = time.perf_counter() - t0
+    assert again is first, "monitor result was recomputed instead of cached"
+    assert elapsed < 0.05, f"50 cached polls took {elapsed:.3f}s"
+
+
+def test_availability_is_cached():
+    from yacine.models.manager import ModelManager
+    from yacine.core.config import ModelConfig
+    m = ModelManager(model_config=ModelConfig(provider="ollama", model="m",
+                                              base_url="http://127.0.0.1:1"))
+    calls = {"n": 0}
+    real = m.provider.is_available
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    m.provider.is_available = counting
+    for _ in range(5):
+        m.available()
+    assert calls["n"] == 1, f"backend probed {calls['n']} times instead of once"
+
+
+def test_context_index_reuses_unchanged_files(tmp_path):
+    """Re-indexing an untouched tree must not re-read every file."""
+    from yacine.core.context import ContextEngine
+    for i in range(5):
+        (tmp_path / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n")
+    ce = ContextEngine(tmp_path)
+    ce.index()
+    reads = {"n": 0}
+    original = Path.read_text
+
+    def counting_read(self, *a, **kw):
+        reads["n"] += 1
+        return original(self, *a, **kw)
+
+    Path.read_text = counting_read
+    try:
+        ce.index(force=False)          # cached: returns immediately
+        ce.indexed = False
+        ce.index()                     # re-walk, but nothing changed
+    finally:
+        Path.read_text = original
+    assert reads["n"] == 0, f"re-read {reads['n']} unchanged files"
+
+    # A modified file IS re-read.
+    import os, time
+    target = tmp_path / "m0.py"
+    target.write_text("def f0():\n    return 999\n")
+    os.utime(target, (time.time() + 5, time.time() + 5))
+    ce.indexed = False
+    ce.index()
+    assert "999" in ce.files[str(target)].snippet
