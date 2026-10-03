@@ -32,7 +32,7 @@ from ..core.config import get_settings
 from ..core.auth import get_api_key, key_source
 from ..core.logger import EventBus, get_bus, get_logger
 from ..core.engine import AutonomousEngine, TaskResult
-from ..models.manager import ModelManager
+from ..models.manager import ModelManager, MultiProviderManager
 from ..orchestrator import MultiAgentOrchestrator
 from ..memory.store import MemoryStore
 from ..agents.personas import PERSONAS
@@ -42,7 +42,7 @@ _settings = get_settings()
 _logger = get_logger("api")
 _bus: EventBus = get_bus()
 _memory = MemoryStore(logger=_logger)
-_manager = ModelManager(logger=_logger)
+_manager = MultiProviderManager(logger=_logger)
 
 # --------------------------------------------------------------------------
 # Auth.
@@ -153,6 +153,19 @@ class ModelSwitchRequest(BaseModel):
 # --------------------------------------------------------------------------
 @app.get("/health")
 def health():
+    if isinstance(_manager, MultiProviderManager):
+        active = _manager.active
+        return {
+            "status": "ok",
+            "model_provider": active.cfg.provider,
+            "model": active.model_name,
+            "model_available": active.available(),
+            "multi_provider": True,
+            "role_map": _manager._role_map,
+            "agents": list(PERSONAS.keys()),
+            "pipeline": list(_manager._role_map.keys())[:4],  # architect, orchestrator, etc.
+            "auth_required": bool(API_KEY),
+        }
     return {
         "status": "ok",
         "model_provider": _manager.cfg.provider,
@@ -166,7 +179,21 @@ def health():
 
 @app.get("/models")
 def models():
-    """Active model + available models for selection in the UI."""
+    """Active model + available models for selection in the UI.
+    
+    When using MultiProviderManager, lists all role→model mappings so the
+    UI can show which provider each pipeline stage uses.
+    """
+    from ..models.manager import MultiProviderManager
+    if isinstance(_manager, MultiProviderManager):
+        active = _manager.active
+        return {
+            "active": {"provider": active.cfg.provider, "model": active.model_name},
+            "available": [],
+            "providers": ["ollama", "openai_compatible"],
+            "multi": True,
+            "role_map": _manager._role_map,
+        }
     available = []
     # Ollama models (if reachable).
     try:
@@ -189,6 +216,12 @@ def models():
 
 @app.post("/chat/model")
 def chat_set_model(req: ModelSwitchRequest, request: Request):
+    """Switch the active model.
+    
+    When using MultiProviderManager, the 'model' field is treated as the
+    model name for the 'chat' role. The role→model mapping is used to
+    determine which provider handles it (poolside/* → ollama, else gemini).
+    """
     _check_auth(request)
     overrides = {}
     if req.base_url:
@@ -196,15 +229,25 @@ def chat_set_model(req: ModelSwitchRequest, request: Request):
     if req.api_key:
         overrides["api_key"] = req.api_key
     try:
-        _manager.set_model(req.provider, req.model, **overrides)
+        if isinstance(_manager, MultiProviderManager):
+            # Map role → model name
+            _manager.set_role_model("chat", req.model)
+        else:
+            _manager.set_model(req.provider, req.model, **overrides)
     except Exception as e:
         raise HTTPException(500, f"model switch failed: {e}")
     # Persist so the change survives a restart.
     try:
         from ..core.config import save_config
         s = get_settings()
-        s.model.provider = req.provider
-        s.model.model = req.model
+        if isinstance(_manager, MultiProviderManager):
+            # Update role_map in settings
+            if not hasattr(s, "model_role_map") or s.model_role_map is None:
+                s.model_role_map = {}
+            s.model_role_map["chat"] = req.model
+        else:
+            s.model.provider = req.provider
+            s.model.model = req.model
         if req.base_url:
             s.model.base_url = req.base_url
         if req.api_key:
@@ -212,6 +255,9 @@ def chat_set_model(req: ModelSwitchRequest, request: Request):
         save_config(s)
     except Exception:
         pass
+    if isinstance(_manager, MultiProviderManager):
+        active = _manager.active
+        return {"active": {"provider": active.cfg.provider, "model": active.model_name}}
     return {"active": {"provider": _manager.cfg.provider, "model": _manager.model_name}}
 
 
@@ -229,18 +275,36 @@ async def chat_stream(req: ChatRequest, request: Request):
     chat_cfg = _settings.chat_model
     # set_model is a no-op when this is already the active configuration, so
     # repeated chat turns no longer rebuild the provider or churn the model.
-    _manager.set_model(
-        chat_cfg.provider, chat_cfg.model,
-        keep_alive=chat_cfg.keep_alive, max_tokens=chat_cfg.max_tokens,
-        temperature=chat_cfg.temperature, timeout=chat_cfg.timeout,
-        num_ctx=getattr(chat_cfg, "num_ctx", None),
-    )
+    try:
+        if isinstance(_manager, MultiProviderManager):
+            # In multi-provider mode, use the 'chat' role's provider
+            chat_mgr = _manager.get_for_role("chat")
+            chat_mgr.set_model(
+                chat_cfg.provider, chat_cfg.model,
+                keep_alive=chat_cfg.keep_alive, max_tokens=chat_cfg.max_tokens,
+                temperature=chat_cfg.temperature, timeout=chat_cfg.timeout,
+                num_ctx=getattr(chat_cfg, "num_ctx", None),
+            )
+            _active_mgr = chat_mgr
+        else:
+            _manager.set_model(
+                chat_cfg.provider, chat_cfg.model,
+                keep_alive=chat_cfg.keep_alive, max_tokens=chat_cfg.max_tokens,
+                temperature=chat_cfg.temperature, timeout=chat_cfg.timeout,
+                num_ctx=getattr(chat_cfg, "num_ctx", None),
+            )
+            _active_mgr = _manager
+    except Exception:
+        _active_mgr = _manager if isinstance(_manager, ModelManager) else _manager.active
 
     # Optional one-shot override for this turn only.
     if req.model and ":" in req.model:
         prov, mod = req.model.split(":", 1)
         try:
-            _manager.set_model(prov, mod)
+            if isinstance(_manager, MultiProviderManager):
+                _active_mgr.set_model(prov, mod)
+            else:
+                _manager.set_model(prov, mod)
         except Exception:
             pass
 
@@ -264,7 +328,7 @@ async def chat_stream(req: ChatRequest, request: Request):
 
         def worker():
             try:
-                for chunk in _manager.stream(messages, tools=None):
+                for chunk in _active_mgr.stream(messages, tools=None):
                     if chunk.delta:
                         loop.call_soon_threadsafe(queue.put_nowait, chunk.delta)
             except Exception as e:  # noqa: BLE001
@@ -330,7 +394,12 @@ async def chat(req: ChatRequest, request: Request):
     # present).
     messages = [Message(role="system", content=system),
                 Message(role="user", content=req.message)]
-    resp = _manager.complete(messages, tools=None)
+    # Use the active chat provider
+    if isinstance(_manager, MultiProviderManager):
+        active_mgr = _manager.get_for_role("chat")
+    else:
+        active_mgr = _manager
+    resp = active_mgr.complete(messages, tools=None)
     text = (resp.text or "").strip()
     # If the model still emitted a lone JSON tool call, return a friendly note
     # instead of raw JSON.
@@ -338,7 +407,7 @@ async def chat(req: ChatRequest, request: Request):
         text = "Sure — tell me what you'd like me to build or fix, and tick " \
                "\"run as autonomous task\" (or press Ctrl+Enter) to execute it."
     return {"response": text, "tool_calls": 0,
-            "active": {"provider": _manager.cfg.provider, "model": _manager.model_name}}
+            "active": {"provider": active_mgr.cfg.provider, "model": active_mgr.model_name}}
 
 
 @app.post("/run")

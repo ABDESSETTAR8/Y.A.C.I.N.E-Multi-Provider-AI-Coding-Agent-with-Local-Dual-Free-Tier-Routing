@@ -43,7 +43,10 @@ class TerminalTool(Tool):
         py = python_executable(self.sandbox.workspace)
         if py == "python":
             return cmd
-        return re.sub(r'^\s*python(3(?:\.\d+)?)?(?=\s|$)', f'"{py}"', cmd, count=1)
+        # Use a lambda replacement to avoid re.sub interpreting backslashes
+        # in the path (e.g. \U in C:\Users\... triggers a regex error).
+        return re.sub(r'^\s*python(3(?:\.\d+)?)?(?=\s|$)',
+                      lambda m: f'"{py}"', cmd, count=1)
 
     def run(self, command: str = "", cwd: str = "", timeout: int = 0,
             cmd: str = "", code: str = "", **kwargs) -> ToolResult:

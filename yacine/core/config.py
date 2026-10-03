@@ -151,6 +151,9 @@ class Settings(BaseModel):
     telegram: "TelegramConfig" = Field(default_factory=lambda: TelegramConfig())
     # Fast model for the conversational chat tab (snappy, stays warm).
     chat_model: "ChatModelConfig" = Field(default_factory=lambda: ChatModelConfig())
+    # Optional role→model override map for MultiProviderManager.
+    # Example: {architect: "poolside/laguna-s-2.1:free", reviewer: "gpt-2.0-flash"}
+    model_role_map: Optional[Dict[str, str]] = Field(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         # Resolve relative dirs against project root.
@@ -206,6 +209,9 @@ def load_config(config_path: Optional[str] = None) -> Settings:
         data.setdefault("permissions", {})["git_push"] = env["YACINE_PERM_GIT_PUSH"].lower() in ("1", "true", "yes")
     if env.get("YACINE_PERM_INTERNET"):
         data.setdefault("permissions", {})["internet_access"] = env["YACINE_PERM_INTERNET"].lower() in ("1", "true", "yes")
+    # Gemini API key for the reviewer/testgen roles in MultiProviderManager
+    if env.get("GOOGLE_API_KEY"):
+        data.setdefault("model", {})["api_key"] = env["GOOGLE_API_KEY"]
 
     settings = Settings(**data)
     # Stash the resolved config path.

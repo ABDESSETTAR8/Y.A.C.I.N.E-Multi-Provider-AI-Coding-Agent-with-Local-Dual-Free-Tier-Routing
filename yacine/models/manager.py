@@ -4,8 +4,9 @@ is a config change only — no code changes needed anywhere else.
 """
 from __future__ import annotations
 
+import os
 import time
-from typing import Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 from .base import ModelProvider
 from .ollama import OllamaProvider
@@ -111,3 +112,97 @@ class ModelManager:
     @property
     def model_name(self) -> str:
         return self.provider.model_name
+
+
+# --------------------------------------------------------------------------
+# Multi-provider manager: routes requests by role to different providers.
+#
+# Free-tier optimization: pairs Laguna 2.1 (deep reasoning / coding) with
+# Gemini (review / test-gen / docs) so both free quotas are consumed in
+# complementarity rather than one model doing work the other could do cheaper.
+# --------------------------------------------------------------------------
+class MultiProviderManager:
+    """Routes to different providers based on the pipeline role.
+
+    Usage:
+        mm = MultiProviderManager()
+        architect_mgr = mm.get_for_role("architect")   # Laguna
+        reviewer_mgr  = mm.get_for_role("reviewer")     # Gemini
+        resp = architect_mgr.complete(messages)
+    """
+
+    # Default role → model mapping (can be overridden by config).
+    DEFAULT_PLAN: Dict[str, str] = {
+        "architect":    "poolside/laguna-s-2.1:free",
+        "orchestrator": "poolside/laguna-s-2.1:free",
+        "executioner":  "poolside/laguna-s-2.1:free",
+        "frontend":     "poolside/laguna-s-2.1:free",
+        "reviewer":     "gpt-2.0-flash",
+        "testgen":      "gpt-2.0-flash",
+        "chat":         "poolside/laguna-s-2.1:free",
+    }
+
+    def __init__(self, settings=None, logger=None) -> None:
+        from ..core.config import get_settings
+        self.settings = settings or get_settings()
+        self.logger = logger
+
+        # Ollama (local Laguna 2.1)
+        ollama_cfg = ModelConfig(
+            provider="ollama",
+            model=self.DEFAULT_PLAN["architect"],
+            base_url=self.settings.model.base_url,
+            keep_alive="0",
+            num_ctx=8192,
+            timeout=self.settings.model.timeout,
+        )
+
+        # Gemini via OpenAI-compatible endpoint
+        gemini_cfg = ModelConfig(
+            provider="openai",
+            model=self.DEFAULT_PLAN["reviewer"],
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=os.environ.get("GOOGLE_API_KEY", ""),
+            keep_alive="0",
+            num_ctx=8192,
+            timeout=self.settings.model.timeout,
+        )
+
+        self._providers: Dict[str, ModelManager] = {
+            "ollama": ModelManager(model_config=ollama_cfg, logger=logger),
+            "gemini": ModelManager(model_config=gemini_cfg, logger=logger),
+        }
+        self._role_map: Dict[str, str] = dict(self.DEFAULT_PLAN)
+        # Allow settings to override the role→model mapping.
+        override = getattr(self.settings, "model_role_map", None)
+        if override:
+            self._role_map.update(override)
+
+    def get_for_role(self, role: str) -> ModelManager:
+        """Return the ModelManager that should handle ``role``."""
+        model_name = self._role_map.get(role, self.DEFAULT_PLAN.get(role, self.DEFAULT_PLAN["architect"]))
+        # Decide provider by model name convention:
+        # poolside/* or known ollama tags → ollama; everything else → gemini.
+        if model_name.startswith("poolside/") or model_name.startswith("qwen") or model_name.startswith("llama") or model_name.startswith("deepseek"):
+            return self._providers["ollama"]
+        return self._providers["gemini"]
+
+    def set_role_model(self, role: str, model: str) -> None:
+        """Override which model a particular role uses at runtime."""
+        self._role_map[role] = model
+        if self.logger:
+            self.logger.info("model", f"role '{role}' → {model}")
+
+    def all_models(self) -> List[dict]:
+        """Describe every configured provider/model for the /models endpoint."""
+        return [
+            {"role": role, "provider": pm.cfg.provider, "model": pm.cfg.model}
+            for role, pm in (
+                (r, self.get_for_role(r)) for r in self._role_map
+            )
+        ]
+
+    @property
+    def active(self) -> ModelManager:
+        """Default active manager (the architect / Laguna provider)."""
+        return self._providers["ollama"]

@@ -155,21 +155,41 @@ class MultiAgentOrchestrator:
                  logger=None, on_event: Optional[Callable[[dict], None]] = None,
                  provider: str = "ollama",
                  script_path: Optional[str] = None) -> None:
+        from ..models.manager import MultiProviderManager
         self.settings = get_settings()
         self.logger = logger or get_logger("orchestrator")
         self._bus = self.logger.bus if hasattr(self.logger, "bus") else None
         self.on_event = on_event
         self.base_url = base_url
-        self.models = dict(MODEL_PLAN)
-        if models:
-            self.models.update(models)
-        # Substitute installed models for any that are missing, so a machine
-        # that has not pulled all four still runs instead of dying mid-stream.
-        if provider == "ollama":
+        self._model_notes: List[str] = []
+        # --- Multi-provider routing ---
+        # Use MultiProviderManager so roles can map to different providers
+        # (e.g. Laguna for architect/executioner, Gemini for reviewer/testgen).
+        # Falls back to single ModelManager when provider == "scripted".
+        if provider == "scripted":
+            self._multi_mgr: Optional[MultiProviderManager] = None
+            self.models = dict(MODEL_PLAN)
+            if models:
+                self.models.update(models)
+            self._mgr = ModelManager(
+                model_config=ModelConfig(provider=provider,
+                                         model=self.models.get("architect", "scripted"),
+                                         base_url=base_url,
+                                         timeout=self.settings.model.timeout,
+                                         keep_alive="0", script_path=script_path),
+                logger=self.logger,
+            )
+        else:
+            self._multi_mgr = MultiProviderManager(settings=self.settings, logger=self.logger)
+            self._mgr = self._multi_mgr.active  # default to architect (Laguna)
+            # Allow caller to override role→model mapping.
+            self.models = dict(MODEL_PLAN)
+            if models:
+                self.models.update(models)
+                for role, m in models.items():
+                    self._multi_mgr.set_role_model(role, m)
             self.models, self._model_notes = resolve_model_plan(
                 self.models, base_url or DEFAULT_BASE_URL)
-        else:
-            self._model_notes = []
         # Workspace: prefer the user's chosen project folder; else a temp dir.
         self._task_id = f"orch_{int(time.time())}_{uuid.uuid4().hex[:6]}"
         if workspace_root:
@@ -179,16 +199,11 @@ class MultiAgentOrchestrator:
         self._workspace_root = ws
         self.sandbox: Sandbox = make_sandbox(str(ws), logger=self.logger)
         self.tools = build_tool_registry(self.sandbox)
-        # A SINGLE manager; we mutate its model + provider per stage to guarantee
-        # only one model is ever resident. provider stays "ollama".
-        self._mgr = ModelManager(
-            model_config=ModelConfig(provider=provider, model=self.models["architect"],
-                                     base_url=base_url, timeout=self.settings.model.timeout,
-                                     keep_alive="0", script_path=script_path),
-            logger=self.logger,
-        )
+        # self._mgr was already set above (either single manager for scripted
+        # mode, or self._multi_mgr.active for the multi-provider pipeline).
+        # No duplicate initialization here.
 
-    # -- event helper -----------------------------------------------------
+    # -- event helper ---------------------------------------------------------
     def _emit(self, kind: str, source: str, message: str, **data: object) -> None:
         if self._bus is not None and hasattr(self._bus, "emit"):
             self._bus.emit(kind, source, message, **data)
@@ -205,22 +220,28 @@ class MultiAgentOrchestrator:
 
     # -- model switching + hot-swap --------------------------------------
     def _stage(self, role: str) -> ModelManager:
-        """Point the shared manager at `role`'s model, having evicted the previous.
+        """Point the active manager at `role`'s model, having evicted the previous.
 
         Enforces sequential execution: we unload() the currently-loaded model
         (keep_alive=0) BEFORE loading the next, so two models are never resident
         simultaneously on the 8 GB GPU.
+
+        When a MultiProviderManager is active, this also swaps the underlying
+        manager so the correct provider (Ollama/Gemini) is used per stage.
         """
         # Evict whatever is currently resident (no-op on first stage / scripted).
         try:
             self._mgr.unload()
         except Exception:
             pass
-        model = self.models[role]
+        # --- Multi-provider swap ---
+        if self._multi_mgr is not None:
+            self._mgr = self._multi_mgr.get_for_role(role)
+        model = self.models.get(role, self._mgr.cfg.model)
         self._mgr.cfg.model = model
         self._mgr.cfg.keep_alive = "0"  # evict immediately after each response
-        self.logger.info("orchestrator", f"→ stage[{role}] model={model}")
-        self._emit("agent", role, f"Loading {model} (sequential hot-swap)")
+        self.logger.info("orchestrator", f"→ stage[{role}] model={model} provider={self._mgr.cfg.provider}")
+        self._emit("agent", role, f"Loading {model} via {self._mgr.cfg.provider} (sequential hot-swap)")
         return self._mgr
 
     # -- JSON parsing for the Orchestrator output ------------------------
@@ -357,6 +378,37 @@ class MultiAgentOrchestrator:
         self._emit("agent", "executioner", f"execution complete (pass={passed})")
         return full
 
+    def _run_reviewer(self, request: str, execution_log: str) -> str:
+        """Run a review pass using the reviewer role's provider (Gemini).
+
+        If the multi-provider manager is active and a 'reviewer' role is
+        configured, this swaps to that provider, runs a quick review of the
+        execution log, and returns the commentary. Falls back gracefully
+        (returns empty string) when no dedicated reviewer is set up.
+        """
+        if self._multi_mgr is None:
+            return ""
+        # Swap to the reviewer provider (Gemini on free tier)
+        reviewer_mgr = self._multi_mgr.get_for_role("reviewer")
+        try:
+            reviewer_mgr.unload()
+        except Exception:
+            pass
+        # Brief review prompt — Gemini handles this well on free tier
+        review_prompt = (
+            f"REVIEW the following code execution log for a user request:\n"
+            f"{request}\n\n"
+            f"EXECUTION LOG:\n{execution_log[-6000:]}\n\n"
+            f"Did the task succeed? List any issues or missing tests in 3-5 bullet points."
+        )
+        resp = reviewer_mgr.complete([
+            Message(role="system", content="You are a senior code reviewer."),
+            Message(role="user", content=review_prompt),
+        ], keep_alive=0)
+        # Switch back to architect (Laguna) for downstream stages
+        self._mgr = self._multi_mgr.get_for_role("frontend")
+        return resp.text.strip()
+
     def _run_frontend(self, request: str, execution_log: str) -> str:
         mgr = self._stage("frontend")
         resp = mgr.complete([
@@ -422,7 +474,19 @@ class MultiAgentOrchestrator:
             self._emit_progress(100, "executioner", "❌ Executioner failed")
             return result
 
-        # 4) Frontend summary
+        # 4) Reviewer pass (Phase E: code review + test generation)
+        # Uses Gemini for review/testgen if configured, else skips gracefully.
+        try:
+            self._emit_progress(85, "reviewer", "🔍 Reviewer: checking code + tests")
+            review_result = self._run_reviewer(request, result.execution_log)
+            if review_result:
+                result.review = review_result
+                self._emit("reasoning", "reviewer", review_result[:2000])
+            self._emit_progress(90, "reviewer", "🔍 Reviewer: done")
+        except Exception as e:
+            self._emit("agent", "orchestrator", f"Reviewer skipped: {e}")
+
+        # 5) Frontend summary
         try:
             self._emit_progress(95, "frontend", "💬 Frontend: summarizing results")
             result.summary = self._run_frontend(request, result.execution_log)

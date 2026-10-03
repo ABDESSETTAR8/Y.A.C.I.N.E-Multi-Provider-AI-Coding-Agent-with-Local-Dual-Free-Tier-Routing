@@ -47,6 +47,26 @@ max_plan_iterations: 20
 max_self_heal_iterations: 10
 stream: true
 telemetry: true
+
+# --------------------------------------------------------------------------
+# Multi-provider role mapping (Phase E: dual free-tier routing).
+# --------------------------------------------------------------------------
+# When using MultiProviderManager, each role maps to a model. Models whose
+# name starts with "poolside/" or "qwen"/"llama"/"deepseek" are served via
+# Ollama (local, free). Other names are sent to the Gemini endpoint
+# (https://generativelanguage.googleapis.com/v1beta/openai/) using the
+# GOOGLE_API_KEY env var or model.api_key.
+#
+# Default strategy: Laguna 2.1 (reasoning/coding) + Gemini 2.0 Flash
+# (review/test-generation/docs) to maximize both free quotas.
+model_role_map:
+  architect:    "poolside/laguna-s-2.1:free"   # deep reasoning → local
+  orchestrator: "poolside/laguna-s-2.1:free"   # plan decomposition → local
+  executioner:  "poolside/laguna-s-2.1:free"   # code writing → local
+  frontend:     "poolside/laguna-s-2.1:free"   # summaries → local
+  reviewer:     "gpt-2.0-flash"                # code review → Gemini
+  testgen:      "gpt-2.0-flash"                # test generation → Gemini
+  chat:         "poolside/laguna-s-2.1:free"   # conversational chat → local
 # Phase A engine behaviour toggles.
 #
 # SPEED: each of these runs EXTRA full agent turns after your code is already
